@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Bảo tàng số"
+description = "Website bảo tàng số bằng tiếng Việt: cho phép khách tham quan khám phá, tìm kiếm, lọc và lưu hiện vật yêu thích; quản trị viên quản lý hiện vật, ảnh, chú thích tương tác, chuyên đề và nội dung trang chủ."
+version = "1.0.0"
+id = "artifacts/bao-tang-so"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25626
+
+[services.development]
+run = "pnpm --filter @workspace/bao-tang-so run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/bao-tang-so", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/bao-tang-so/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25626"
+BASE_PATH = "/"

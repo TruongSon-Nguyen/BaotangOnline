@@ -1,0 +1,51 @@
+.exhibition-artifact-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 220px;
+  margin: 18px 0 4px;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid #ded7c8;
+  background: #f3efe5;
+}
+
+.exhibition-artifact-picker legend {
+  padding: 0 6px;
+  color: #617065;
+  font-size: 10px;
+}
+
+.exhibition-artifact-picker label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 5px 9px;
+  padding: 8px;
+  background: #fbf8f0;
+  color: #344f42;
+  cursor: pointer;
+}
+
+.exhibition-artifact-picker input {
+  grid-row: span 2;
+  margin-top: 2px;
+  accent-color: #275547;
+}
+
+.exhibition-artifact-picker label span {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+}
+
+.exhibition-artifact-picker label small {
+  color: #899084;
+  font-size: 8px;
+}
+
+@media (max-width: 640px) {
+  .exhibition-artifact-picker {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,859 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API for the Vietnamese Digital Museum, including public collection browsing and administrator content management.
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: museum
+    description: Public museum content
+  - name: artifacts
+    description: Public artifact discovery
+  - name: exhibitions
+    description: Public exhibition discovery
+  - name: administration
+    description: Clerk-authenticated administrator operations
+  - name: storage
+    description: Administrator image uploads
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /museum/home:
+    get:
+      operationId: getMuseumHome
+      tags: [museum]
+      summary: Get homepage content
+      responses:
+        "200":
+          description: Homepage introduction, featured artifacts, and exhibitions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MuseumHome"
+  /museum/intro:
+    get:
+      operationId: getMuseumIntro
+      tags: [museum]
+      summary: Get the museum introduction
+      responses:
+        "200":
+          description: Museum introduction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MuseumIntro"
+  /artifacts:
+    get:
+      operationId: listArtifacts
+      tags: [artifacts]
+      summary: Search and filter published artifacts
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: periodId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: materialId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: exhibitionId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 48, default: 12 }
+      responses:
+        "200":
+          description: Matching published artifacts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactPage"
+  /artifacts/{id}:
+    get:
+      operationId: getArtifact
+      tags: [artifacts]
+      summary: Get one published artifact and its image annotations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Artifact details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Artifact"
+        "404":
+          description: Artifact not found
+  /periods:
+    get:
+      operationId: listPeriods
+      tags: [artifacts]
+      summary: List historical periods for collection filters
+      responses:
+        "200":
+          description: Historical periods
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/HistoricalPeriod" }
+  /materials:
+    get:
+      operationId: listMaterials
+      tags: [artifacts]
+      summary: List materials for collection filters
+      responses:
+        "200":
+          description: Materials
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Material" }
+  /exhibitions:
+    get:
+      operationId: listExhibitions
+      tags: [exhibitions]
+      summary: List published exhibitions
+      responses:
+        "200":
+          description: Published exhibitions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ExhibitionSummary" }
+  /exhibitions/{id}:
+    get:
+      operationId: getExhibition
+      tags: [exhibitions]
+      summary: Get one published exhibition and its artifacts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Exhibition details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Exhibition"
+        "404":
+          description: Exhibition not found
+  /admin/session:
+    get:
+      operationId: getAdminSession
+      tags: [administration]
+      summary: Check whether the signed-in user is an approved museum administrator
+      responses:
+        "200":
+          description: Current administrator profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSession"
+        "401":
+          description: Sign-in required
+        "403":
+          description: Signed-in user is not an approved administrator
+  /admin/overview:
+    get:
+      operationId: getAdminOverview
+      tags: [administration]
+      summary: Get collection totals and recent updates for the admin dashboard
+      responses:
+        "200":
+          description: Administrator overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminOverview"
+  /admin/artifacts:
+    get:
+      operationId: listAdminArtifacts
+      tags: [administration]
+      summary: List all artifacts, including drafts
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: All matching artifacts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactPage"
+    post:
+      operationId: createArtifact
+      tags: [administration]
+      summary: Create an artifact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArtifactInput" }
+      responses:
+        "201":
+          description: Created artifact
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Artifact" }
+  /admin/artifacts/{id}:
+    get:
+      operationId: getAdminArtifact
+      tags: [administration]
+      summary: Get an artifact for administrator editing, including drafts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Artifact for editing
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Artifact" }
+        "404":
+          description: Artifact not found
+    patch:
+      operationId: updateArtifact
+      tags: [administration]
+      summary: Update an artifact
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArtifactUpdate" }
+      responses:
+        "200":
+          description: Updated artifact
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Artifact" }
+        "404":
+          description: Artifact not found
+    delete:
+      operationId: deleteArtifact
+      tags: [administration]
+      summary: Delete an artifact after explicit confirmation in the client
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Artifact deleted
+        "404":
+          description: Artifact not found
+  /admin/artifacts/{id}/images:
+    post:
+      operationId: addArtifactImage
+      tags: [administration]
+      summary: Add an uploaded image to an artifact
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArtifactImageInput" }
+      responses:
+        "201":
+          description: Added image
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactImage" }
+  /admin/images/{id}:
+    patch:
+      operationId: updateArtifactImage
+      tags: [administration]
+      summary: Update an artifact image
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArtifactImageUpdate" }
+      responses:
+        "200":
+          description: Updated image
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactImage" }
+    delete:
+      operationId: deleteArtifactImage
+      tags: [administration]
+      summary: Remove an artifact image and its hotspots
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Image deleted
+  /admin/images/{id}/hotspots:
+    post:
+      operationId: addImageHotspot
+      tags: [administration]
+      summary: Add a 2D image annotation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HotspotInput" }
+      responses:
+        "201":
+          description: Added annotation
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Hotspot" }
+  /admin/hotspots/{id}:
+    patch:
+      operationId: updateImageHotspot
+      tags: [administration]
+      summary: Update a 2D image annotation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HotspotUpdate" }
+      responses:
+        "200":
+          description: Updated annotation
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Hotspot" }
+    delete:
+      operationId: deleteImageHotspot
+      tags: [administration]
+      summary: Delete a 2D image annotation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Annotation deleted
+  /admin/exhibitions:
+    get:
+      operationId: listAdminExhibitions
+      tags: [administration]
+      summary: List all exhibitions, including drafts
+      responses:
+        "200":
+          description: All exhibitions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Exhibition" }
+    post:
+      operationId: createExhibition
+      tags: [administration]
+      summary: Create an exhibition
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExhibitionInput" }
+      responses:
+        "201":
+          description: Created exhibition
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Exhibition" }
+  /admin/exhibitions/{id}:
+    patch:
+      operationId: updateExhibition
+      tags: [administration]
+      summary: Update an exhibition and its artifact selection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExhibitionUpdate" }
+      responses:
+        "200":
+          description: Updated exhibition
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Exhibition" }
+    delete:
+      operationId: deleteExhibition
+      tags: [administration]
+      summary: Delete an exhibition without deleting its artifacts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Exhibition deleted
+  /admin/content/intro:
+    patch:
+      operationId: updateMuseumIntro
+      tags: [administration]
+      summary: Update homepage museum introduction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MuseumIntroUpdate" }
+      responses:
+        "200":
+          description: Updated introduction
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MuseumIntro" }
+  /admin/content/featured:
+    patch:
+      operationId: updateFeaturedArtifacts
+      tags: [administration]
+      summary: Set ordered featured artifacts on the homepage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeaturedArtifactsInput" }
+      responses:
+        "200":
+          description: Updated featured artifacts
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ArtifactSummary" }
+  /admin/accounts:
+    get:
+      operationId: listAdminAccounts
+      tags: [administration]
+      summary: List approved administrators
+      responses:
+        "200":
+          description: Administrators
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AdminAccount" }
+    post:
+      operationId: inviteAdmin
+      tags: [administration]
+      summary: Invite another administrator by email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminInviteInput" }
+      responses:
+        "201":
+          description: Invitation sent and administrator access recorded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminAccount" }
+  /admin/accounts/{id}:
+    delete:
+      operationId: revokeAdmin
+      tags: [administration]
+      summary: Revoke an administrator invitation or access
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Administrator access revoked
+  /storage/uploads/request-url:
+    post:
+      operationId: requestImageUploadUrl
+      tags: [storage]
+      summary: Request a presigned upload URL for a validated image
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImageUploadRequest" }
+      responses:
+        "200":
+          description: Presigned upload details
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImageUploadUrl" }
+        "400":
+          description: Unsupported image type or image too large
+        "401":
+          description: Sign-in required
+        "403":
+          description: Administrator access required
+  /storage/objects/{objectPath}:
+    get:
+      operationId: getStoredImage
+      tags: [storage]
+      summary: Serve an uploaded image
+      parameters:
+        - name: objectPath
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Image content
+        "404":
+          description: Image not found
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    HistoricalPeriod:
+      type: object
+      required: [id, name, startYear, endYear]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        startYear: { type: integer }
+        endYear: { type: integer }
+        description: { type: ["string", "null"] }
+    Material:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: ["string", "null"] }
+    Hotspot:
+      type: object
+      required: [id, x, y, title, body]
+      properties:
+        id: { type: string, format: uuid }
+        x: { type: number, minimum: 0, maximum: 100 }
+        y: { type: number, minimum: 0, maximum: 100 }
+        title: { type: string }
+        body: { type: string }
+    ArtifactImage:
+      type: object
+      required: [id, imageUrl, alt, caption, isPrimary, sortOrder, hotspots]
+      properties:
+        id: { type: string, format: uuid }
+        imageUrl: { type: string }
+        alt: { type: string }
+        caption: { type: string }
+        isPrimary: { type: boolean }
+        sortOrder: { type: integer }
+        hotspots:
+          type: array
+          items: { $ref: "#/components/schemas/Hotspot" }
+    ArtifactSummary:
+      type: object
+      required: [id, name, slug, summary, periodName, materialName, dateLabel, imageUrl, isFeatured, isSample, status]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        summary: { type: string }
+        periodName: { type: string }
+        materialName: { type: string }
+        dateLabel: { type: string }
+        imageUrl: { type: string }
+        isFeatured: { type: boolean }
+        isSample: { type: boolean }
+        status: { type: string, enum: [draft, published] }
+    Artifact:
+      allOf:
+        - $ref: "#/components/schemas/ArtifactSummary"
+        - type: object
+          required: [history, origin, dimensions, condition, periodId, materialId, images, exhibitionIds, createdAt, updatedAt]
+          properties:
+            history: { type: string }
+            origin: { type: string }
+            dimensions: { type: ["string", "null"] }
+            condition: { type: ["string", "null"] }
+            periodId: { type: string, format: uuid }
+            materialId: { type: string, format: uuid }
+            images:
+              type: array
+              items: { $ref: "#/components/schemas/ArtifactImage" }
+            exhibitionIds:
+              type: array
+              items: { type: string, format: uuid }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    ArtifactPage:
+      type: object
+      required: [items, total, page, limit]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ArtifactSummary" }
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+    ArtifactInput:
+      type: object
+      required: [name, slug, summary, history, origin, dateLabel, periodId, materialId, status]
+      properties:
+        name: { type: string, minLength: 1 }
+        slug: { type: string, minLength: 1 }
+        summary: { type: string, minLength: 1 }
+        history: { type: string, minLength: 1 }
+        origin: { type: string, minLength: 1 }
+        dateLabel: { type: string, minLength: 1 }
+        dimensions: { type: ["string", "null"] }
+        condition: { type: ["string", "null"] }
+        periodId: { type: string, format: uuid }
+        materialId: { type: string, format: uuid }
+        status: { type: string, enum: [draft, published] }
+        exhibitionIds:
+          type: array
+          items: { type: string, format: uuid }
+    ArtifactUpdate:
+      type: object
+      properties:
+        name: { type: string, minLength: 1 }
+        slug: { type: string, minLength: 1 }
+        summary: { type: string, minLength: 1 }
+        history: { type: string, minLength: 1 }
+        origin: { type: string, minLength: 1 }
+        dateLabel: { type: string, minLength: 1 }
+        dimensions: { type: ["string", "null"] }
+        condition: { type: ["string", "null"] }
+        periodId: { type: string, format: uuid }
+        materialId: { type: string, format: uuid }
+        status: { type: string, enum: [draft, published] }
+        exhibitionIds:
+          type: array
+          items: { type: string, format: uuid }
+    ArtifactImageInput:
+      type: object
+      required: [imageUrl, alt, caption]
+      properties:
+        imageUrl: { type: string, minLength: 1 }
+        alt: { type: string }
+        caption: { type: string }
+        isPrimary: { type: boolean, default: false }
+    ArtifactImageUpdate:
+      type: object
+      properties:
+        alt: { type: string }
+        caption: { type: string }
+        isPrimary: { type: boolean }
+        sortOrder: { type: integer }
+    HotspotInput:
+      type: object
+      required: [x, y, title, body]
+      properties:
+        x: { type: number, minimum: 0, maximum: 100 }
+        y: { type: number, minimum: 0, maximum: 100 }
+        title: { type: string, minLength: 1 }
+        body: { type: string, minLength: 1 }
+    HotspotUpdate:
+      type: object
+      properties:
+        x: { type: number, minimum: 0, maximum: 100 }
+        y: { type: number, minimum: 0, maximum: 100 }
+        title: { type: string, minLength: 1 }
+        body: { type: string, minLength: 1 }
+    ExhibitionSummary:
+      type: object
+      required: [id, title, slug, summary, coverImage, artifactCount]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        slug: { type: string }
+        summary: { type: string }
+        coverImage: { type: ["string", "null"] }
+        artifactCount: { type: integer }
+    Exhibition:
+      allOf:
+        - $ref: "#/components/schemas/ExhibitionSummary"
+        - type: object
+          required: [story, startDate, endDate, status, artifacts]
+          properties:
+            story: { type: string }
+            startDate: { type: ["string", "null"], format: date }
+            endDate: { type: ["string", "null"], format: date }
+            status: { type: string, enum: [draft, published] }
+            artifacts:
+              type: array
+              items: { $ref: "#/components/schemas/ArtifactSummary" }
+    ExhibitionInput:
+      type: object
+      required: [title, slug, summary, story, status]
+      properties:
+        title: { type: string, minLength: 1 }
+        slug: { type: string, minLength: 1 }
+        summary: { type: string, minLength: 1 }
+        story: { type: string }
+        coverImage: { type: ["string", "null"] }
+        startDate: { type: ["string", "null"], format: date }
+        endDate: { type: ["string", "null"], format: date }
+        status: { type: string, enum: [draft, published] }
+        artifactIds:
+          type: array
+          items: { type: string, format: uuid }
+    ExhibitionUpdate:
+      type: object
+      properties:
+        title: { type: string, minLength: 1 }
+        slug: { type: string, minLength: 1 }
+        summary: { type: string, minLength: 1 }
+        story: { type: string }
+        coverImage: { type: ["string", "null"] }
+        startDate: { type: ["string", "null"], format: date }
+        endDate: { type: ["string", "null"], format: date }
+        status: { type: string, enum: [draft, published] }
+        artifactIds:
+          type: array
+          items: { type: string, format: uuid }
+    MuseumIntro:
+      type: object
+      required: [museumName, tagline, story, heroImage, updatedAt]
+      properties:
+        museumName: { type: string }
+        tagline: { type: string }
+        story: { type: string }
+        heroImage: { type: ["string", "null"] }
+        updatedAt: { type: string, format: date-time }
+    MuseumIntroUpdate:
+      type: object
+      required: [museumName, tagline, story]
+      properties:
+        museumName: { type: string, minLength: 1 }
+        tagline: { type: string, minLength: 1 }
+        story: { type: string, minLength: 1 }
+        heroImage: { type: ["string", "null"] }
+    MuseumHome:
+      type: object
+      required: [intro, featuredArtifacts, exhibitions, collectionCount]
+      properties:
+        intro: { $ref: "#/components/schemas/MuseumIntro" }
+        featuredArtifacts:
+          type: array
+          items: { $ref: "#/components/schemas/ArtifactSummary" }
+        exhibitions:
+          type: array
+          items: { $ref: "#/components/schemas/ExhibitionSummary" }
+        collectionCount: { type: integer }
+    FeaturedArtifactsInput:
+      type: object
+      required: [artifactIds]
+      properties:
+        artifactIds:
+          type: array
+          items: { type: string, format: uuid }
+    AdminSession:
+      type: object
+      required: [id, email, displayName]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        displayName: { type: string }
+    AdminOverview:
+      type: object
+      required: [artifactCount, publishedCount, draftCount, exhibitionCount, imageCount, recentArtifacts]
+      properties:
+        artifactCount: { type: integer }
+        publishedCount: { type: integer }
+        draftCount: { type: integer }
+        exhibitionCount: { type: integer }
+        imageCount: { type: integer }
+        recentArtifacts:
+          type: array
+          items: { $ref: "#/components/schemas/ArtifactSummary" }
+    AdminAccount:
+      type: object
+      required: [id, email, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        status: { type: string, enum: [active, invited, suspended] }
+        createdAt: { type: string, format: date-time }
+    AdminInviteInput:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+    ImageUploadRequest:
+      type: object
+      required: [name, size, contentType]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 180 }
+        size: { type: integer, minimum: 1, maximum: 10485760 }
+        contentType: { type: string, enum: [image/jpeg, image/png, image/webp] }
+    ImageUploadUrl:
+      type: object
+      required: [uploadUrl, objectPath]
+      properties:
+        uploadUrl: { type: string, format: uri }
+        objectPath: { type: string }
+
