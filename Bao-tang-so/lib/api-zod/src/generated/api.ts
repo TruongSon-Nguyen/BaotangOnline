@@ -314,6 +314,7 @@ export const ListAdminArtifactsResponse = zod.object({
 
 
 
+
 export const CreateArtifactBody = zod.object({
   "name": zod.string().min(1),
   "slug": zod.string().min(1),
@@ -326,6 +327,7 @@ export const CreateArtifactBody = zod.object({
   "periodId": zod.string().uuid(),
   "materialId": zod.string().uuid(),
   "status": zod.enum(['draft', 'published']),
+  "imageUrl": zod.string().min(1),
   "exhibitionIds": zod.array(zod.string().uuid()).optional()
 })
 

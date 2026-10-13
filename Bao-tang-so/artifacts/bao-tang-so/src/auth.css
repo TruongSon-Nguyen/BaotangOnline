@@ -1,0 +1,41 @@
+.header-right{gap:18px}
+.login-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid #235346;background:#235346;color:#f7f1e4;padding:10px 14px;font:inherit;font-size:12px;cursor:pointer;transition:background .2s,transform .2s}
+.login-button:hover{background:#193d34;transform:translateY(-1px)}
+.login-button:focus-visible,.auth-dialog-close:focus-visible,.auth-mode-switch button:focus-visible{outline:2px solid #b3654b;outline-offset:3px}
+.auth-dialog-backdrop{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:20px;background:rgba(20,39,32,.66);backdrop-filter:blur(4px)}
+.auth-dialog{width:min(460px,100%);max-height:min(90dvh,780px);overflow-y:auto;padding:28px 30px 23px;background:#f8f4e9;border:1px solid #ddd4c2;box-shadow:0 24px 80px rgba(8,25,19,.34)}
+.auth-dialog-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px}
+.auth-dialog-heading h2{margin:5px 0 0;color:#24483d;font-size:30px;line-height:1.15}
+.auth-dialog-close{display:grid;place-items:center;width:35px;height:35px;flex:none;border:1px solid #dcd4c4;background:transparent;color:#355547;cursor:pointer}
+.auth-dialog .cl-rootBox{width:100%;justify-content:center}
+.auth-dialog .cl-cardBox{width:100%;max-width:100%;box-shadow:none}
+.auth-form{display:grid;gap:14px}
+.auth-form label{display:grid;gap:7px;color:#3f594e;font-size:12px;font-weight:600}
+.auth-form input{width:100%;min-height:43px;padding:10px 12px;border:1px solid #d7d0c1;border-radius:0;background:#fffdf8;color:#243c35;font:inherit;font-size:14px}
+.auth-form input:focus{outline:2px solid #9eb3a6;outline-offset:1px;border-color:#527665}
+.auth-form label small{color:#758278;font-size:11px;font-weight:400}
+.auth-submit{min-height:44px;margin-top:3px;border:1px solid #235346;background:#235346;color:#f7f1e4;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.auth-submit:hover:not(:disabled){background:#193d34}
+.auth-submit:disabled{opacity:.65;cursor:wait}
+.account-menu{position:relative;display:flex;align-items:center}
+.header-account-name{display:inline-flex;align-items:center;gap:5px;max-width:180px;overflow:hidden;padding:6px 0;border:0;background:transparent;color:#455c51;font:inherit;font-size:12px;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.header-account-name>span{overflow:hidden;text-overflow:ellipsis}
+.header-account-name svg{flex:none}
+.account-menu-dropdown{position:absolute;top:calc(100% + 9px);right:0;z-index:60;display:grid;min-width:180px;padding:6px;background:#fbf8ef;border:1px solid #ddd5c5;box-shadow:0 12px 28px rgba(27,53,43,.18)}
+.account-menu-dropdown a,.account-menu-dropdown button{display:flex;align-items:center;width:100%;padding:11px 12px;border:0;background:transparent;color:#355547;text-align:left;text-decoration:none;font:inherit;font-size:12px;cursor:pointer}
+.account-menu-dropdown a:hover,.account-menu-dropdown button:hover{background:#e9ece3;color:#21483a}
+.account-menu-status{padding:10px 12px;color:#758076;font-size:11px;line-height:1.5}
+.create-admin-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;max-width:960px;margin-top:20px}
+.create-admin-form label{display:grid;align-content:start;gap:7px;color:#617065;font-size:10px}
+.create-admin-form label small{color:#758278;font-size:11px}
+.create-admin-form>.upload-error,.create-admin-form>button{grid-column:1/-1;justify-self:start}
+.create-admin-form>.upload-error{width:100%}
+.auth-header-error{position:fixed;top:8px;left:50%;z-index:1100;transform:translateX(-50%);padding:10px 15px;background:#f5e1d7;color:#934e39;font-size:12px;box-shadow:0 4px 18px #16271f33}
+.auth-config-notice{display:flex;align-items:flex-start;gap:12px;padding:17px;background:#e8ece4;color:#4b6255;font-size:13px;line-height:1.7}
+.auth-config-notice svg{flex:none;margin-top:1px;color:#235346}
+.auth-config-notice p{margin:0}
+.auth-server-status{margin-top:14px;padding:11px 13px;background:#e8ece4;color:#355547;font-size:12px;line-height:1.6}
+.auth-server-status.is-error{background:#f5e1d7;color:#934e39}
+.auth-mode-switch{margin:18px 0 0;text-align:center;color:#68766d;font-size:12px}
+.auth-mode-switch button{padding:2px 0;border:0;background:none;color:#235346;font:inherit;font-weight:700;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+@media(max-width:680px){.header-right{gap:10px}.login-button{padding:9px 10px;font-size:11px}.header-account-name{max-width:96px;font-size:10px}.account-menu-dropdown{min-width:165px}.auth-dialog-backdrop{padding:12px}.auth-dialog{padding:22px 18px 19px}.auth-dialog-heading h2{font-size:26px}.create-admin-form{grid-template-columns:1fr}}

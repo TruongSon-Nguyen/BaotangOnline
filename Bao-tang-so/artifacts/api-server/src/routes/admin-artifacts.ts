@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { asc, count, eq } from "drizzle-orm";
-import { Router, type IRouter } from "express";
+import express, { Router, type IRouter } from "express";
 import {
   AddArtifactImageBody,
   AddArtifactImageParams,
@@ -37,10 +40,101 @@ import {
   imageHotspotsTable,
 } from "@workspace/db";
 import { getArtifactDetails, listArtifactSummaries } from "../lib/museumData";
+import { localUploadDirectory } from "../lib/localUploads";
 import { ObjectStorageService } from "../lib/objectStorage";
 
 const router: IRouter = Router();
 const objectStorage = new ObjectStorageService();
+const supportedImageTypes = new Map([
+  ["image/jpeg", { extension: "jpg", signature: (file: Buffer) => file[0] === 0xff && file[1] === 0xd8 && file[2] === 0xff }],
+  ["image/png", { extension: "png", signature: (file: Buffer) => file.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) }],
+  ["image/webp", { extension: "webp", signature: (file: Buffer) => file.toString("ascii", 0, 4) === "RIFF" && file.toString("ascii", 8, 12) === "WEBP" }],
+]);
+
+async function validateImageUrl(
+  imageUrl: string,
+  accountId: string,
+): Promise<string | null> {
+  if (imageUrl.startsWith("/api/storage/objects/")) {
+    const objectPath = imageUrl.slice("/api/storage".length);
+    try {
+      const objectFile = await objectStorage.getObjectEntityFile(objectPath);
+      const [metadata] = await objectFile.getMetadata();
+      const contentType = String(metadata.contentType ?? "").toLowerCase();
+      const size = Number(metadata.size ?? 0);
+      if (
+        !["image/jpeg", "image/png", "image/webp"].includes(contentType) ||
+        size < 1 ||
+        size > 10 * 1024 * 1024
+      ) {
+        return "Unsupported or oversized image";
+      }
+      await objectStorage.trySetObjectEntityAclPolicy(objectPath, {
+        owner: accountId,
+        visibility: "private",
+      });
+      return null;
+    } catch {
+      return "Uploaded image could not be verified";
+    }
+  }
+  if (imageUrl.startsWith("/api/storage/uploads/")) {
+    const filename = imageUrl.slice("/api/storage/uploads/".length);
+    if (!/^[0-9a-f-]+\.(jpg|png|webp)$/i.test(filename)) {
+      return "Uploaded image could not be verified";
+    }
+    try {
+      const info = await stat(path.join(localUploadDirectory, filename));
+      if (!info.isFile() || info.size < 1 || info.size > 10 * 1024 * 1024) {
+        return "Uploaded image could not be verified";
+      }
+      return null;
+    } catch {
+      return "Uploaded image could not be verified";
+    }
+  }
+  if (imageUrl.startsWith("/images/")) return null;
+  try {
+    if (new URL(imageUrl).protocol !== "https:") {
+      return "Image URL must use HTTPS or museum storage";
+    }
+    return null;
+  } catch {
+    return "Image URL must use HTTPS or museum storage";
+  }
+}
+
+router.post(
+  "/uploads/image",
+  express.raw({ type: [...supportedImageTypes.keys()], limit: "10mb" }),
+  async (req, res): Promise<void> => {
+    const contentType = req.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+    const imageType = contentType ? supportedImageTypes.get(contentType) : undefined;
+    const image = Buffer.isBuffer(req.body) ? req.body : undefined;
+    if (
+      !imageType ||
+      !image ||
+      image.length === 0 ||
+      !imageType.signature(image)
+    ) {
+      res.status(400).json({ error: "Chỉ hỗ trợ ảnh JPEG, PNG hoặc WebP hợp lệ." });
+      return;
+    }
+
+    const filename = `${randomUUID()}.${imageType.extension}`;
+    try {
+      await mkdir(localUploadDirectory, { recursive: true });
+      await writeFile(path.join(localUploadDirectory, filename), image, {
+        flag: "wx",
+      });
+    } catch (error) {
+      req.log.error({ err: error }, "Failed to store uploaded artifact image");
+      res.status(500).json({ error: "Không thể lưu ảnh hiện vật." });
+      return;
+    }
+    res.status(201).json({ imageUrl: `/api/storage/uploads/${filename}` });
+  },
+);
 
 router.get("/session", async (_req, res): Promise<void> => {
   const admin = res.locals.museumAdmin as {
@@ -116,13 +210,32 @@ router.post("/artifacts", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { exhibitionIds = [], ...fields } = parsed.data;
+  const { exhibitionIds = [], imageUrl, ...fields } = parsed.data;
+  const admin = res.locals.museumAdmin as { accountId: string };
+  const imageError = await validateImageUrl(imageUrl, admin.accountId);
+  if (imageError) {
+    res.status(400).json({ error: imageError });
+    return;
+  }
 
   const artifact = await db.transaction(async (tx) => {
     const [created] = await tx
       .insert(artifactsTable)
-      .values(fields)
+      .values({
+        ...fields,
+        status: "published",
+        isFeatured: true,
+        featuredOrder: -1,
+      })
       .returning();
+    await tx.insert(artifactImagesTable).values({
+      artifactId: created.id,
+      imageUrl,
+      alt: fields.name,
+      caption: "",
+      isPrimary: true,
+      sortOrder: 0,
+    });
     if (exhibitionIds.length) {
       await tx.insert(artifactExhibitionsTable).values(
         exhibitionIds.map((exhibitionId) => ({
@@ -220,40 +333,11 @@ router.post("/artifacts/:id/images", async (req, res): Promise<void> => {
     return;
   }
   const imageUrl = parsed.data.imageUrl.trim();
-  let objectPath: string | undefined;
-  if (imageUrl.startsWith("/api/storage/objects/")) {
-    objectPath = imageUrl.slice("/api/storage".length);
-    try {
-      const objectFile = await objectStorage.getObjectEntityFile(objectPath);
-      const [metadata] = await objectFile.getMetadata();
-      const contentType = String(metadata.contentType ?? "").toLowerCase();
-      const size = Number(metadata.size ?? 0);
-      if (
-        !["image/jpeg", "image/png", "image/webp"].includes(contentType) ||
-        size < 1 ||
-        size > 10 * 1024 * 1024
-      ) {
-        res.status(400).json({ error: "Unsupported or oversized image" });
-        return;
-      }
-      const admin = res.locals.museumAdmin as { clerkUserId: string };
-      await objectStorage.trySetObjectEntityAclPolicy(objectPath, {
-        owner: admin.clerkUserId,
-        visibility: "private",
-      });
-    } catch {
-      res.status(400).json({ error: "Uploaded image could not be verified" });
-      return;
-    }
-  } else if (imageUrl.startsWith("/images/")) {
-    // Bundled illustrative assets are served directly by the museum web artifact.
-  } else {
-    try {
-      if (new URL(imageUrl).protocol !== "https:") throw new Error("https required");
-    } catch {
-      res.status(400).json({ error: "Image URL must use HTTPS or museum storage" });
-      return;
-    }
+  const admin = res.locals.museumAdmin as { accountId: string };
+  const imageError = await validateImageUrl(imageUrl, admin.accountId);
+  if (imageError) {
+    res.status(400).json({ error: imageError });
+    return;
   }
 
   const existingImages = await db

@@ -1,32 +1,74 @@
-import { clerkClient } from "@clerk/express";
-import { and, count, eq } from "drizzle-orm";
+import { count, eq } from "drizzle-orm";
 import { Router, type IRouter } from "express";
+import { z } from "zod/v4";
 import {
   InviteAdminBody,
   InviteAdminResponse,
   ListAdminAccountsResponse,
   RevokeAdminParams,
 } from "@workspace/api-zod";
-import { db, museumAdminsTable } from "@workspace/db";
-import { INITIAL_ADMIN_EMAIL } from "../lib/seedMuseum";
+import { db, userAccountsTable } from "@workspace/db";
+import { hashPassword } from "./auth";
 
 const router: IRouter = Router();
+const CreateAdminAccountBody = z.object({
+  name: z.string().trim().min(2).max(80),
+  email: z.string().trim().email().max(254),
+  password: z.string().min(8).max(128),
+});
 
 router.get("/accounts", async (_req, res): Promise<void> => {
   const accounts = await db
     .select()
-    .from(museumAdminsTable)
-    .orderBy(museumAdminsTable.createdAt);
+    .from(userAccountsTable)
+    .orderBy(userAccountsTable.createdAt);
   res.json(
     ListAdminAccountsResponse.parse(
       accounts.map((account) => ({
         id: account.id,
         email: account.email,
-        status: account.status as "active" | "invited" | "suspended",
+        status: account.isAdmin ? "active" : "suspended",
         createdAt: account.createdAt,
       })),
     ),
   );
+});
+
+router.post("/accounts/create", async (req, res): Promise<void> => {
+  const parsed = CreateAdminAccountBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: "Vui lòng nhập tên, email hợp lệ và mật khẩu từ 8 đến 128 ký tự.",
+    });
+    return;
+  }
+
+  const email = parsed.data.email.toLowerCase();
+  const passwordHash = await hashPassword(parsed.data.password);
+  const [account] = await db
+    .insert(userAccountsTable)
+    .values({
+      name: parsed.data.name,
+      email,
+      passwordHash,
+      isAdmin: true,
+    })
+    .onConflictDoNothing({ target: userAccountsTable.email })
+    .returning({
+      id: userAccountsTable.id,
+      email: userAccountsTable.email,
+      createdAt: userAccountsTable.createdAt,
+    });
+
+  if (!account) {
+    res.status(409).json({ error: "Email này đã được đăng ký." });
+    return;
+  }
+
+  res.status(201).json({
+    ...account,
+    status: "active",
+  });
 });
 
 router.post("/accounts", async (req, res): Promise<void> => {
@@ -36,54 +78,33 @@ router.post("/accounts", async (req, res): Promise<void> => {
     return;
   }
   const email = parsed.data.email.trim().toLowerCase();
-  const [existing] = await db
+  const [account] = await db
     .select()
-    .from(museumAdminsTable)
-    .where(eq(museumAdminsTable.email, email))
+    .from(userAccountsTable)
+    .where(eq(userAccountsTable.email, email))
     .limit(1);
-  if (existing) {
-    res.status(409).json({ error: "Administrator email already exists" });
+  if (!account) {
+    res.status(404).json({ error: "Tài khoản này chưa đăng ký." });
+    return;
+  }
+  if (account.isAdmin) {
+    res.status(409).json({ error: "Tài khoản này đã có quyền quản trị." });
     return;
   }
 
-  const [admin] = await db
-    .insert(museumAdminsTable)
-    .values({ email, status: "invited" })
+  const [updated] = await db
+    .update(userAccountsTable)
+    .set({ isAdmin: true })
+    .where(eq(userAccountsTable.id, account.id))
     .returning();
-  const rawHost = req.headers["x-forwarded-host"] ?? req.get("host") ?? "";
-  const host = (Array.isArray(rawHost) ? rawHost[0] : rawHost)
-    .split(",")[0]
-    ?.trim();
-  const rawProtocol = req.headers["x-forwarded-proto"] ?? "https";
-  const protocol = (Array.isArray(rawProtocol) ? rawProtocol[0] : rawProtocol)
-    .split(",")[0]
-    ?.trim();
-
-  try {
-    if (!host) throw new Error("Request host is unavailable");
-    const redirectUrl = new URL("/sign-up", `${protocol || "https"}://${host}`);
-    const invitation = await clerkClient.invitations.createInvitation({
-      emailAddress: email,
-      redirectUrl: redirectUrl.toString(),
-    });
-    const [updated] = await db
-      .update(museumAdminsTable)
-      .set({ clerkInvitationId: invitation.id })
-      .where(eq(museumAdminsTable.id, admin.id))
-      .returning();
-    res.status(201).json(
-      InviteAdminResponse.parse({
-        id: updated.id,
-        email: updated.email,
-        status: updated.status,
-        createdAt: updated.createdAt,
-      }),
-    );
-  } catch (error) {
-    await db.delete(museumAdminsTable).where(eq(museumAdminsTable.id, admin.id));
-    req.log.error({ err: error }, "Failed to create administrator invitation");
-    res.status(502).json({ error: "Unable to send administrator invitation" });
-  }
+  res.status(201).json(
+    InviteAdminResponse.parse({
+      id: updated.id,
+      email: updated.email,
+      status: "active",
+      createdAt: updated.createdAt,
+    }),
+  );
 });
 
 router.delete("/accounts/:id", async (req, res): Promise<void> => {
@@ -92,41 +113,33 @@ router.delete("/accounts/:id", async (req, res): Promise<void> => {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [admin] = await db
+  const [account] = await db
     .select()
-    .from(museumAdminsTable)
-    .where(eq(museumAdminsTable.id, params.data.id))
+    .from(userAccountsTable)
+    .where(eq(userAccountsTable.id, params.data.id))
     .limit(1);
-  if (!admin) {
-    res.status(404).json({ error: "Administrator not found" });
+  if (!account) {
+    res.status(404).json({ error: "Tài khoản không tồn tại." });
     return;
   }
-  if (admin.email === INITIAL_ADMIN_EMAIL) {
-    res.status(409).json({ error: "The initial administrator cannot be removed" });
+  if (!account.isAdmin) {
+    res.status(409).json({ error: "Tài khoản này không có quyền quản trị." });
     return;
   }
 
-  if (admin.status === "active") {
-    const [activeCount] = await db
-      .select({ value: count() })
-      .from(museumAdminsTable)
-      .where(eq(museumAdminsTable.status, "active"));
-    if (Number(activeCount?.value ?? 0) <= 1) {
-      res.status(409).json({ error: "At least one active administrator is required" });
-      return;
-    }
+  const [adminCount] = await db
+    .select({ value: count() })
+    .from(userAccountsTable)
+    .where(eq(userAccountsTable.isAdmin, true));
+  if (Number(adminCount?.value ?? 0) <= 1) {
+    res.status(409).json({ error: "Phải giữ lại ít nhất một quản trị viên." });
+    return;
   }
 
-  if (admin.status === "invited" && admin.clerkInvitationId) {
-    try {
-      await clerkClient.invitations.revokeInvitation(admin.clerkInvitationId);
-    } catch (error) {
-      req.log.warn({ err: error }, "Clerk invitation was already unavailable");
-    }
-  }
   await db
-    .delete(museumAdminsTable)
-    .where(and(eq(museumAdminsTable.id, admin.id), eq(museumAdminsTable.email, admin.email)));
+    .update(userAccountsTable)
+    .set({ isAdmin: false })
+    .where(eq(userAccountsTable.id, account.id));
   res.sendStatus(204);
 });
 

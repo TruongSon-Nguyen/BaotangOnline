@@ -660,7 +660,7 @@ components:
         limit: { type: integer }
     ArtifactInput:
       type: object
-      required: [name, slug, summary, history, origin, dateLabel, periodId, materialId, status]
+      required: [name, slug, summary, history, origin, dateLabel, periodId, materialId, status, imageUrl]
       properties:
         name: { type: string, minLength: 1 }
         slug: { type: string, minLength: 1 }
@@ -673,6 +673,7 @@ components:
         periodId: { type: string, format: uuid }
         materialId: { type: string, format: uuid }
         status: { type: string, enum: [draft, published] }
+        imageUrl: { type: string, minLength: 1 }
         exhibitionIds:
           type: array
           items: { type: string, format: uuid }
@@ -856,4 +857,3 @@ components:
       properties:
         uploadUrl: { type: string, format: uri }
         objectPath: { type: string }
-

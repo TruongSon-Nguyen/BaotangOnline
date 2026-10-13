@@ -27,5 +27,7 @@ export interface ArtifactInput {
   periodId: string;
   materialId: string;
   status: ArtifactInputStatus;
+  /** @minLength 1 */
+  imageUrl: string;
   exhibitionIds?: string[];
 }

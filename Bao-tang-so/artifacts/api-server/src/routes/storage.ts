@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
-import { clerkClient, getAuth } from "@clerk/express";
-import { and, eq, inArray } from "drizzle-orm";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { and, eq } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
   RequestImageUploadUrlBody,
@@ -11,9 +12,10 @@ import {
   artifactsTable,
   db,
   exhibitionsTable,
-  museumAdminsTable,
   museumIntroTable,
 } from "@workspace/db";
+import { getAuthenticatedAccount } from "./auth";
+import { localUploadDirectory } from "../lib/localUploads";
 import { requireMuseumAdmin } from "../lib/museumAdmin";
 import {
   ObjectNotFoundError,
@@ -95,24 +97,39 @@ async function isPublishedImage(imageUrl: string): Promise<boolean> {
 }
 
 async function isMuseumAdmin(req: Parameters<Parameters<typeof router.get>[1]>[0]) {
-  const { userId } = getAuth(req);
-  if (!userId) return false;
-  const user = await clerkClient.users.getUser(userId);
-  const email = user.primaryEmailAddress;
-  if (email?.verification?.status !== "verified") return false;
-  const normalized = email.emailAddress.trim().toLowerCase();
-  const [admin] = await db
-    .select({ id: museumAdminsTable.id })
-    .from(museumAdminsTable)
-    .where(
-      and(
-        eq(museumAdminsTable.email, normalized),
-        inArray(museumAdminsTable.status, ["active", "invited"]),
-      ),
-    )
-    .limit(1);
-  return Boolean(admin);
+  const account = await getAuthenticatedAccount(req);
+  return Boolean(account?.isAdmin);
 }
+
+router.get("/uploads/:filename", async (req, res): Promise<void> => {
+  const filename = req.params.filename;
+  if (!/^[0-9a-f-]+\.(jpg|png|webp)$/i.test(filename)) {
+    res.status(404).json({ error: "Image not found" });
+    return;
+  }
+  const imageUrl = `/api/storage/uploads/${filename}`;
+  try {
+    const image = await readFile(path.join(localUploadDirectory, filename));
+    const isPublic = await isPublishedImage(imageUrl);
+    if (!isPublic && !(await isMuseumAdmin(req))) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    const extension = path.extname(filename).toLowerCase();
+    res
+      .status(200)
+      .type(extension === ".jpg" ? "image/jpeg" : extension === ".png" ? "image/png" : "image/webp")
+      .set("Cache-Control", isPublic ? "public, max-age=3600" : "private, no-store")
+      .send(image);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    req.log.error({ err: error }, "Failed to serve locally stored museum image");
+    res.status(500).json({ error: "Unable to serve image" });
+  }
+});
 
 router.get("/objects/*path", async (req, res): Promise<void> => {
   const raw = req.params.path;
