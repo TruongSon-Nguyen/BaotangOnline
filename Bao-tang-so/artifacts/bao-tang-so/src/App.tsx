@@ -110,7 +110,7 @@ function CollectionPage() {
   const [materialId,setMaterialId]=useState('');
   const [page,setPage]=useState(1);
   const apiParams=useMemo(()=>({q:query||undefined,periodId:periodId||undefined,materialId:materialId||undefined,page,limit:18}),[query,periodId,materialId,page]);
-  const {data,isLoading}=useListArtifacts(apiParams);
+  const {data,isLoading,isError}=useListArtifacts(apiParams,{query:{retry:false}});
   const periods=useListPeriods(); const materials=useListMaterials(); const {ids,toggle,has}=useFavorites();
   useEffect(()=>setPage(1),[query,periodId,materialId]);
 
@@ -132,7 +132,7 @@ function CollectionPage() {
   }, [query, periodId, materialId, displayPeriods, displayMaterials]);
 
   const activeTotal = data?.total ?? filteredSample.length;
-  const activeItems = (data?.items && data.items.length > 0) ? data.items : (data ? [] : filteredSample);
+  const activeItems = data?.items && data.items.length > 0 ? data.items : (isError ? filteredSample : data ? [] : filteredSample);
   const activeLimit = data?.limit ?? 18;
   const totalPages = Math.max(1, Math.ceil(activeTotal / activeLimit));
 
