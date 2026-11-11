@@ -92,13 +92,25 @@ router.patch("/exhibitions/:id", async (req, res): Promise<void> => {
       endDate: normalizeDate(fields.endDate),
     }).filter(([, value]) => value !== undefined),
   ) as Partial<typeof exhibitionsTable.$inferInsert>;
+  // A link-only (or empty) patch has no column values: Drizzle would fail with
+  // "No values to set", so fall back to loading the row instead of updating.
+  const hasFieldUpdates = Object.keys(updates).length > 0;
 
   const updated = await db.transaction(async (tx) => {
-    const [exhibition] = await tx
-      .update(exhibitionsTable)
-      .set(updates)
-      .where(eq(exhibitionsTable.id, params.data.id))
-      .returning();
+    let exhibition;
+    if (hasFieldUpdates) {
+      [exhibition] = await tx
+        .update(exhibitionsTable)
+        .set(updates)
+        .where(eq(exhibitionsTable.id, params.data.id))
+        .returning();
+    } else {
+      [exhibition] = await tx
+        .select()
+        .from(exhibitionsTable)
+        .where(eq(exhibitionsTable.id, params.data.id))
+        .limit(1);
+    }
     if (!exhibition) return undefined;
     if (artifactIds !== undefined) {
       await tx

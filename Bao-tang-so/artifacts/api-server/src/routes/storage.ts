@@ -144,7 +144,24 @@ router.get("/objects/*path", async (req, res): Promise<void> => {
     });
     res.status(response.status);
     if (response.body) {
-      Readable.fromWeb(response.body as ReadableStream<Uint8Array>).pipe(res);
+      const stream = Readable.fromWeb(
+        response.body as ReadableStream<Uint8Array>,
+      );
+      // An error mid-stream (network drop, object removed) must never become an
+      // unhandled 'error' event and crash the whole process.
+      stream.on("error", (err) => {
+        req.log.error({ err }, "Image stream interrupted while downloading");
+        if (res.headersSent) {
+          res.destroy();
+        } else {
+          res.status(502).json({ error: "Unable to serve image" });
+        }
+      });
+      res.on("error", (err) => {
+        req.log.warn({ err }, "Client connection dropped while serving image");
+        stream.destroy();
+      });
+      stream.pipe(res);
     } else {
       res.end();
     }

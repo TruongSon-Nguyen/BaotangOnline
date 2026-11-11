@@ -152,12 +152,24 @@ router.patch("/artifacts/:id", async (req, res): Promise<void> => {
   const updates = Object.fromEntries(
     Object.entries(fields).filter(([, value]) => value !== undefined),
   ) as Partial<typeof artifactsTable.$inferInsert>;
+  // A link-only (or empty) patch has no column values: Drizzle would fail with
+  // "No values to set", so fall back to loading the row instead of updating.
+  const hasFieldUpdates = Object.keys(updates).length > 0;
   const updated = await db.transaction(async (tx) => {
-    const [artifact] = await tx
-      .update(artifactsTable)
-      .set(updates)
-      .where(eq(artifactsTable.id, params.data.id))
-      .returning();
+    let artifact;
+    if (hasFieldUpdates) {
+      [artifact] = await tx
+        .update(artifactsTable)
+        .set(updates)
+        .where(eq(artifactsTable.id, params.data.id))
+        .returning();
+    } else {
+      [artifact] = await tx
+        .select()
+        .from(artifactsTable)
+        .where(eq(artifactsTable.id, params.data.id))
+        .limit(1);
+    }
     if (!artifact) return undefined;
     if (exhibitionIds !== undefined) {
       await tx
@@ -310,12 +322,19 @@ router.patch("/images/:id", async (req, res): Promise<void> => {
   const updates = Object.fromEntries(
     Object.entries(fields).filter(([, value]) => value !== undefined),
   ) as Partial<typeof artifactImagesTable.$inferInsert>;
+  const hasChanges =
+    sortOrder !== undefined ||
+    isPrimary !== undefined ||
+    Object.keys(updates).length > 0;
   const image = await db.transaction(async (tx) => {
     if (isPrimary === true) {
       await tx
         .update(artifactImagesTable)
         .set({ isPrimary: false })
         .where(eq(artifactImagesTable.artifactId, existing.artifactId));
+    }
+    if (!hasChanges) {
+      return existing;
     }
     const [updated] = await tx
       .update(artifactImagesTable)
@@ -326,7 +345,7 @@ router.patch("/images/:id", async (req, res): Promise<void> => {
       })
       .where(eq(artifactImagesTable.id, params.data.id))
       .returning();
-    return updated;
+    return updated ?? existing;
   });
   const hotspots = await db
     .select()
@@ -409,15 +428,27 @@ router.patch("/hotspots/:id", async (req, res): Promise<void> => {
   const updates = Object.fromEntries(
     Object.entries(parsed.data).filter(([, value]) => value !== undefined),
   ) as Partial<typeof imageHotspotsTable.$inferInsert>;
-  const [hotspot] = await db
-    .update(imageHotspotsTable)
-    .set(updates)
+  // An empty patch has nothing to set: Drizzle would fail with
+  // "No values to set", so just return the current row.
+  const [existingHotspot] = await db
+    .select()
+    .from(imageHotspotsTable)
     .where(eq(imageHotspotsTable.id, params.data.id))
-    .returning();
-  if (!hotspot) {
+    .limit(1);
+  if (!existingHotspot) {
     res.status(404).json({ error: "Image annotation not found" });
     return;
   }
+  const hotspot =
+    Object.keys(updates).length === 0
+      ? existingHotspot
+      : (
+          await db
+            .update(imageHotspotsTable)
+            .set(updates)
+            .where(eq(imageHotspotsTable.id, params.data.id))
+            .returning()
+        )[0] ?? existingHotspot;
   res.json(UpdateImageHotspotResponse.parse(hotspot));
 });
 
