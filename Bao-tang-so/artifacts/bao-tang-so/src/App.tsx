@@ -46,6 +46,11 @@ function useFavorites() {
 function BrandMark({ inverted=false }: {inverted?:boolean}) { return <Link href="/" data-testid="link-home" className={`brand ${inverted?'brand-invert':''}`}><span className="brand-emblem"><Landmark size={20}/></span><span><b>BẢO TÀNG SỐ</b><small>DI SẢN VIỆT NAM</small></span></Link>; }
 type AuthMode = 'sign-in' | 'sign-up';
 type AuthUser = {id:string;email:string;name:string};
+async function readAuthJson<T>(response:Response):Promise<T>{
+  const body=await response.text();
+  if(!body.trim())throw new Error(`Máy chủ API không trả về dữ liệu (HTTP ${response.status}). Kiểm tra API server và cấu hình Firebase.`);
+  try{return JSON.parse(body) as T}catch{throw new Error(`Máy chủ API trả về dữ liệu không hợp lệ (HTTP ${response.status}).`)}
+}
 function Header() {
   const [menu,setMenu]=useState(false);
   const [authMode,setAuthMode]=useState<AuthMode|null>(null);
@@ -61,7 +66,7 @@ function Header() {
     let cancelled=false;
     void fetch('/api/auth/session',{credentials:'same-origin'}).then(async response=>{
       if(response.status===401)return null;
-      const payload=await response.json() as {user?:AuthUser;error?:string};
+      const payload=await readAuthJson<{user?:AuthUser;error?:string}>(response);
       if(!response.ok)throw new Error(payload.error||'Không thể kiểm tra phiên đăng nhập.');
       return payload.user||null;
     }).then(user=>{if(!cancelled)setAuthUser(user)}).catch(error=>{if(!cancelled)setAuthError(error instanceof Error?error.message:'Không thể kết nối máy chủ xác thực.')});
@@ -144,7 +149,7 @@ function AuthDialog({mode,onModeChange,onAuthenticated,onClose}:{mode:AuthMode;o
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify(mode==='sign-up'?{name,email,password}:{email,password}),
       });
-      const payload=await response.json() as {user?:AuthUser;error?:string};
+      const payload=await readAuthJson<{user?:AuthUser;error?:string}>(response);
       if(!response.ok)throw new Error(payload.error||'Máy chủ không thể xác thực tài khoản.');
       if(!payload.user)throw new Error('Máy chủ không trả về thông tin tài khoản.');
       onAuthenticated(payload.user);

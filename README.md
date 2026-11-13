@@ -86,58 +86,35 @@ API lưu dữ liệu trong các collection Firestore: `artifacts`, `artifactImag
 
 ## Cài đặt và chạy
 
-### 1. Cài công cụ
+### Cài đặt lần đầu
 
-Cài Node.js 24.x, sau đó cài pnpm:
-
-```bash
-npm install -g pnpm@12
-```
-
-### 2. Tải mã nguồn và cài thư viện
+Cần Node.js 24.x và pnpm 12. Mở terminal tại thư mục gốc repository rồi chạy:
 
 ```bash
-git clone https://github.com/TruongSon-Nguyen/BaotangOnline.git
-cd BaotangOnline
+cd Bao-tang-so
 pnpm install
 ```
 
-Nếu đã có mã nguồn, mở terminal tại thư mục gốc repository rồi chạy `pnpm install`.
+### Chạy ứng dụng trong VS Code
 
-### 3. Cấu hình Firebase
+Mở **hai terminal** trong VS Code. Trước khi chạy lệnh, kiểm tra terminal đang
+ở thư mục `Bao-tang-so` (đường dẫn kết thúc bằng `/BaotangOnline/Bao-tang-so`).
+Nếu terminal đang ở thư mục repository bên ngoài `BaotangOnline`, chạy
+`cd Bao-tang-so` một lần. Nếu đã ở `Bao-tang-so` thì **không chạy `cd` lại**.
 
-Để chạy đầy đủ chức năng, cần có Firebase project bật Cloud Firestore. Tải
-service-account key tại **Firebase Console → Project settings → Service accounts**,
-rồi lưu hai file sau trong thư mục `Bao-tang-so/.local/`:
-
-`firebase-service-account.json` là file key vừa tải. Tạo thêm file `api.env`:
-
-```env
-PORT=5000
-FIREBASE_PROJECT_ID=your-firebase-project-id
-GOOGLE_APPLICATION_CREDENTIALS=../../.local/firebase-service-account.json
-```
-
-Không đưa các file trong `.local/` lên Git. Nếu chỉ muốn xem giao diện, có thể
-bỏ qua bước Firebase; các chức năng cần dữ liệu từ API sẽ không hoạt động.
-
-### 4. Chạy ứng dụng
-
-Mở **hai terminal** tại thư mục gốc repository.
-
-**Terminal 1 — API** (cần cấu hình Firebase ở bước 3):
+**Terminal 1 — API** (chờ đến khi thấy `Server listening`, cổng `5000`):
 
 ```bash
 pnpm --filter @workspace/api-server dev
 ```
 
-**Terminal 2 — giao diện** (macOS/Linux):
+**Terminal 2 — giao diện (Linux/macOS)** (chờ đến khi Vite báo `http://localhost:5173/`):
 
 ```bash
 PORT=5173 BASE_PATH=/ pnpm --filter @workspace/bao-tang-so dev
 ```
 
-Windows PowerShell:
+Với Windows PowerShell, dùng các lệnh sau ở Terminal 2:
 
 ```powershell
 $env:PORT = '5173'
@@ -145,9 +122,11 @@ $env:BASE_PATH = '/'
 pnpm --filter @workspace/bao-tang-so dev
 ```
 
-Mở **http://localhost:5173** để xem web. Dừng mỗi ứng dụng bằng `Ctrl+C` trong
-terminal tương ứng. Nếu API không kết nối được Firestore, kiểm tra project ID,
-đường dẫn key và quyền của service account.
+Mở **http://localhost:5173** để sử dụng. Để dừng mỗi tiến trình, nhấn `Ctrl+C`
+trong terminal tương ứng. Nếu frontend báo cổng `5173` đang được sử dụng, frontend
+đã chạy ở terminal khác; mở trang hiện có hoặc dừng tiến trình đó bằng `Ctrl+C`
+trước khi chạy lại. Nếu API không khởi động, kiểm tra file service account,
+Project ID và quyền truy cập Firestore.
 
 ## Lưu ý vận hành
 
