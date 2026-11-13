@@ -111,6 +111,7 @@ pnpm --filter @workspace/api-server dev
 **Terminal 2 — giao diện (Linux/macOS)** (chờ đến khi Vite báo `http://localhost:5173/`):
 
 ```bash
+cd Bao-tang-so
 PORT=5173 BASE_PATH=/ pnpm --filter @workspace/bao-tang-so dev
 ```
 
