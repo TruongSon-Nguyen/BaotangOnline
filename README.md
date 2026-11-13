@@ -108,7 +108,7 @@ Nếu terminal đang ở thư mục repository bên ngoài `BaotangOnline`, ch�
 pnpm --filter @workspace/api-server dev
 ```
 
-**Terminal 2 — giao diện (Linux/macOS)** (chờ đến khi Vite báo `http://localhost:5173/`):
+**Terminal 2 — giao diện (chờ đến khi Vite báo `http://localhost:5173/`):
 
 ```bash
 cd Bao-tang-so
