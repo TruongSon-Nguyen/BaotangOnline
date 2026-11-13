@@ -69,12 +69,19 @@ export default defineConfig({
     strictPort: true,
     host: '0.0.0.0',
     allowedHosts: true,
-    proxy: {
-      '/api': {
-        target: process.env.API_URL || 'http://127.0.0.1:5000',
-        changeOrigin: true,
-      },
-    },
+    // Local development only: point API_PROXY_TARGET at the api-server
+    // (e.g. http://127.0.0.1:5000) so /api requests reach it. On Replit leave
+    // this unset — routing is handled there.
+    ...((process.env.API_URL || process.env.API_PROXY_TARGET || (process.env.REPL_ID === undefined ? 'http://127.0.0.1:5000' : undefined))
+      ? {
+          proxy: {
+            '/api': {
+              target: process.env.API_URL || process.env.API_PROXY_TARGET || 'http://127.0.0.1:5000',
+              changeOrigin: true,
+            },
+          },
+        }
+      : {}),
     fs: {
       strict: true,
     },

@@ -464,7 +464,7 @@ router.patch("/images/:id", async (req, res): Promise<void> => {
       { ...imageUpdates, isPrimary: true },
     );
     await batch.commit();
-  } else {
+  } else if (Object.keys(imageUpdates).length > 0) {
     await db
       .collection(collections.artifactImages)
       .doc(params.data.id)

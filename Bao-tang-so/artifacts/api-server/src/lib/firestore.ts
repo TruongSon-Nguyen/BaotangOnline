@@ -103,6 +103,7 @@ export async function updateRecord<T extends FirestoreEntity>(
   const reference = db.collection(collection).doc(id);
   const existing = await reference.get();
   if (!existing.exists) return undefined;
+  if (Object.keys(updates).length === 0) return documentData<T>(existing);
   await reference.update(updates);
   return {
     ...documentData<T>(existing),
