@@ -6,14 +6,15 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { promisify } from "node:util";
-import { and, eq, gt } from "drizzle-orm";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod/v4";
 import {
-  authSessionsTable,
+  collections,
   db,
-  userAccountsTable,
-} from "@workspace/db";
+  findByField,
+  getById,
+  newId,
+} from "../lib/firestore";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -54,6 +55,15 @@ type PublicAccount = {
   name: string;
 };
 type AuthenticatedAccount = PublicAccount & { isAdmin: boolean };
+type UserAccount = AuthenticatedAccount & {
+  passwordHash: string;
+  createdAt: Date;
+};
+type AuthSession = {
+  id: string;
+  userId: string;
+  expiresAt: Date;
+};
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(PASSWORD_SALT_BYTES);
@@ -184,8 +194,9 @@ async function createSession(
 ): Promise<void> {
   const expiresAt = new Date(Date.now() + SESSION_LIFETIME_MS);
   const token = signSessionToken(account.id, expiresAt);
-  await db.insert(authSessionsTable).values({
-    tokenHash: hashSessionToken(token),
+  const tokenHash = hashSessionToken(token);
+  await db.collection(collections.authSessions).doc(tokenHash).create({
+    tokenHash,
     userId: account.id,
     expiresAt,
   });
@@ -200,28 +211,25 @@ export async function getAuthenticatedAccount(
   const claims = verifySessionToken(token);
   if (!claims) return null;
 
-  const [result] = await db
-    .select({
-      id: userAccountsTable.id,
-      email: userAccountsTable.email,
-      name: userAccountsTable.name,
-      isAdmin: userAccountsTable.isAdmin,
-    })
-    .from(authSessionsTable)
-    .innerJoin(
-      userAccountsTable,
-      eq(authSessionsTable.userId, userAccountsTable.id),
-    )
-    .where(
-      and(
-        eq(authSessionsTable.tokenHash, hashSessionToken(token)),
-        eq(authSessionsTable.userId, claims.sub),
-        gt(authSessionsTable.expiresAt, new Date()),
-      ),
-    )
-    .limit(1);
-
-  return result ?? null;
+  const session = await getById<AuthSession>(
+    collections.authSessions,
+    hashSessionToken(token),
+  );
+  if (
+    !session ||
+    session.userId !== claims.sub ||
+    session.expiresAt.getTime() <= Date.now()
+  ) {
+    return null;
+  }
+  const account = await getById<UserAccount>(collections.accounts, claims.sub);
+  if (!account) return null;
+  return {
+    id: account.id,
+    email: account.email,
+    name: account.name,
+    isAdmin: account.isAdmin,
+  };
 }
 
 router.post("/auth/register", async (req, res): Promise<void> => {
@@ -234,11 +242,11 @@ router.post("/auth/register", async (req, res): Promise<void> => {
   }
 
   const email = parsed.data.email.toLowerCase();
-  const [existing] = await db
-    .select({ id: userAccountsTable.id })
-    .from(userAccountsTable)
-    .where(eq(userAccountsTable.email, email))
-    .limit(1);
+  const existing = await findByField<UserAccount>(
+    collections.accounts,
+    "email",
+    email,
+  );
   if (existing) {
     res.status(409).json({ error: "Email này đã được đăng ký." });
     return;
@@ -246,36 +254,38 @@ router.post("/auth/register", async (req, res): Promise<void> => {
 
   const passwordHash = await hashPassword(parsed.data.password);
   const expiresAt = new Date(Date.now() + SESSION_LIFETIME_MS);
-  const createdSession = await db.transaction(async (transaction) => {
-    const [created] = await transaction
-      .insert(userAccountsTable)
-      .values({ name: parsed.data.name, email, passwordHash })
-      .onConflictDoNothing({ target: userAccountsTable.email })
-      .returning({
-        id: userAccountsTable.id,
-        email: userAccountsTable.email,
-        name: userAccountsTable.name,
-      });
-    if (!created) return null;
-
-      const token = signSessionToken(created.id, expiresAt);
-      await transaction.insert(authSessionsTable).values({
-      tokenHash: hashSessionToken(token),
-      userId: created.id,
-      expiresAt,
+  const accountId = newId();
+  const token = signSessionToken(accountId, expiresAt);
+  const emailKey = createHash("sha256").update(email).digest("hex");
+  const sessionHash = hashSessionToken(token);
+  const created = await db.runTransaction(async (transaction) => {
+    const emailRef = db.collection(collections.accountEmailIndex).doc(emailKey);
+    if ((await transaction.get(emailRef)).exists) return false;
+    const accountRef = db.collection(collections.accounts).doc(accountId);
+    transaction.create(accountRef, {
+      id: accountId,
+      name: parsed.data.name,
+      email,
+      passwordHash,
+      isAdmin: true,
+      createdAt: new Date(),
     });
-    return {
-      account: { id: created.id, email: created.email, name: created.name },
-      token,
-    };
+    transaction.create(emailRef, { accountId });
+    transaction.create(
+      db.collection(collections.authSessions).doc(sessionHash),
+      { tokenHash: sessionHash, userId: accountId, expiresAt },
+    );
+    return true;
   });
-  if (!createdSession) {
+  if (!created) {
     res.status(409).json({ error: "Email này đã được đăng ký." });
     return;
   }
 
-  setSessionCookie(res, createdSession.token);
-  res.status(201).json({ user: createdSession.account });
+  setSessionCookie(res, token);
+  res.status(201).json({
+    user: { id: accountId, email, name: parsed.data.name },
+  });
 });
 
 router.post("/auth/login", async (req, res): Promise<void> => {
@@ -288,11 +298,11 @@ router.post("/auth/login", async (req, res): Promise<void> => {
   }
 
   const email = parsed.data.email.toLowerCase();
-  const [account] = await db
-    .select()
-    .from(userAccountsTable)
-    .where(eq(userAccountsTable.email, email))
-    .limit(1);
+  const account = await findByField<UserAccount>(
+    collections.accounts,
+    "email",
+    email,
+  );
   if (!account || !(await verifyPassword(parsed.data.password, account.passwordHash))) {
     res.status(401).json({ error: "Email hoặc mật khẩu không chính xác." });
     return;
@@ -320,8 +330,9 @@ router.post("/auth/logout", async (req, res): Promise<void> => {
   const token = getSessionToken(req);
   if (token) {
     await db
-      .delete(authSessionsTable)
-      .where(eq(authSessionsTable.tokenHash, hashSessionToken(token)));
+      .collection(collections.authSessions)
+      .doc(hashSessionToken(token))
+      .delete();
   }
   res.clearCookie(SESSION_COOKIE, {
     httpOnly: true,

@@ -1,25 +1,18 @@
+import type {
+  ArtifactImageRow,
+  ArtifactRow,
+  ExhibitionRow,
+  HistoricalPeriodRow,
+  ImageHotspotRow,
+  MaterialRow,
+  MuseumIntroRow,
+} from "@workspace/db/schema";
 import {
-  and,
-  asc,
-  count,
-  desc,
-  eq,
-  ilike,
-  inArray,
-  or,
-  type SQL,
-} from "drizzle-orm";
-import {
-  artifactExhibitionsTable,
-  artifactImagesTable,
-  artifactsTable,
-  db,
-  exhibitionsTable,
-  historicalPeriodsTable,
-  imageHotspotsTable,
-  materialsTable,
-  museumIntroTable,
-} from "@workspace/db";
+  collections,
+  findByField,
+  getAll,
+  getById,
+} from "./firestore";
 
 type ListArtifactOptions = {
   includeDraft?: boolean;
@@ -32,26 +25,11 @@ type ListArtifactOptions = {
 };
 
 type JoinedArtifact = {
-  artifact: typeof artifactsTable.$inferSelect;
+  artifact: ArtifactRow;
   periodName: string;
   materialName: string;
   imageUrl: string | null;
 };
-
-const uuidPattern =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function artifactReferenceCondition(reference: string) {
-  return uuidPattern.test(reference)
-    ? eq(artifactsTable.id, reference)
-    : eq(artifactsTable.slug, reference);
-}
-
-function exhibitionReferenceCondition(reference: string) {
-  return uuidPattern.test(reference)
-    ? eq(exhibitionsTable.id, reference)
-    : eq(exhibitionsTable.slug, reference);
-}
 
 function summaryFromJoined(row: JoinedArtifact) {
   return {
@@ -69,145 +47,162 @@ function summaryFromJoined(row: JoinedArtifact) {
   };
 }
 
-function artifactConditions(options: ListArtifactOptions): SQL[] {
-  const conditions: SQL[] = [];
-  if (!options.includeDraft) conditions.push(eq(artifactsTable.status, "published"));
-  if (options.periodId) conditions.push(eq(artifactsTable.periodId, options.periodId));
-  if (options.materialId) conditions.push(eq(artifactsTable.materialId, options.materialId));
-  if (options.exhibitionId) {
-    conditions.push(
-      inArray(
-        artifactsTable.id,
-        db
-          .select({ artifactId: artifactExhibitionsTable.artifactId })
-          .from(artifactExhibitionsTable)
-          .where(eq(artifactExhibitionsTable.exhibitionId, options.exhibitionId)),
-      ),
-    );
-  }
-  if (options.q?.trim()) {
-    const search = `%${options.q.trim().replace(/[%_]/g, "\\$&")}%`;
-    conditions.push(
-      or(
-        ilike(artifactsTable.name, search),
-        ilike(artifactsTable.summary, search),
-        ilike(artifactsTable.history, search),
-        ilike(artifactsTable.origin, search),
-      )!,
-    );
-  }
-  return conditions;
+async function joinArtifact(
+  artifact: ArtifactRow,
+  periods: Map<string, HistoricalPeriodRow>,
+  materials: Map<string, MaterialRow>,
+  images: ArtifactImageRow[],
+): Promise<JoinedArtifact | undefined> {
+  const period = periods.get(artifact.periodId);
+  const material = materials.get(artifact.materialId);
+  if (!period || !material) return undefined;
+  const primaryImage = images.find(
+    (image) => image.artifactId === artifact.id && image.isPrimary,
+  );
+  return {
+    artifact,
+    periodName: period.name,
+    materialName: material.name,
+    imageUrl: primaryImage?.imageUrl ?? null,
+  };
+}
+
+async function getJoinedArtifacts(
+  artifacts: ArtifactRow[],
+): Promise<JoinedArtifact[]> {
+  const [periods, materials, images] = await Promise.all([
+    getAll<HistoricalPeriodRow & { id: string }>(collections.historicalPeriods),
+    getAll<MaterialRow & { id: string }>(collections.materials),
+    getAll<ArtifactImageRow & { id: string }>(collections.artifactImages),
+  ]);
+  const periodById = new Map(periods.map((row) => [row.id, row]));
+  const materialById = new Map(materials.map((row) => [row.id, row]));
+  const joined = await Promise.all(
+    artifacts.map((artifact) =>
+      joinArtifact(artifact, periodById, materialById, images),
+    ),
+  );
+  return joined.filter((row): row is JoinedArtifact => row !== undefined);
 }
 
 export async function listArtifactSummaries(options: ListArtifactOptions) {
-  const conditions = artifactConditions(options);
-  const where = conditions.length ? and(...conditions) : undefined;
-  const [totalRow] = await db
-    .select({ value: count() })
-    .from(artifactsTable)
-    .where(where);
-  const rows = (await db
-    .select({
-      artifact: artifactsTable,
-      periodName: historicalPeriodsTable.name,
-      materialName: materialsTable.name,
-      imageUrl: artifactImagesTable.imageUrl,
-    })
-    .from(artifactsTable)
-    .innerJoin(
-      historicalPeriodsTable,
-      eq(artifactsTable.periodId, historicalPeriodsTable.id),
-    )
-    .innerJoin(materialsTable, eq(artifactsTable.materialId, materialsTable.id))
-    .leftJoin(
-      artifactImagesTable,
-      and(
-        eq(artifactImagesTable.artifactId, artifactsTable.id),
-        eq(artifactImagesTable.isPrimary, true),
-      ),
-    )
-    .where(where)
-    .orderBy(
-      desc(artifactsTable.isFeatured),
-      asc(artifactsTable.featuredOrder),
-      desc(artifactsTable.updatedAt),
-    )
-    .limit(options.limit)
-    .offset((options.page - 1) * options.limit)) as JoinedArtifact[];
+  const [artifacts, exhibitionLinks] = await Promise.all([
+    getAll<ArtifactRow & { id: string }>(collections.artifacts),
+    options.exhibitionId
+      ? getAll<{ id: string; artifactId: string; exhibitionId: string }>(
+          collections.artifactExhibitions,
+        )
+      : Promise.resolve([]),
+  ]);
+  const linkedArtifactIds = new Set(
+    exhibitionLinks
+      .filter((link) => link.exhibitionId === options.exhibitionId)
+      .map((link) => link.artifactId),
+  );
+  const search = options.q?.trim().toLocaleLowerCase();
+  const filtered = artifacts.filter((artifact) => {
+    if (!options.includeDraft && artifact.status !== "published") return false;
+    if (options.periodId && artifact.periodId !== options.periodId) return false;
+    if (options.materialId && artifact.materialId !== options.materialId) return false;
+    if (options.exhibitionId && !linkedArtifactIds.has(artifact.id)) return false;
+    if (
+      search &&
+      ![artifact.name, artifact.summary, artifact.history, artifact.origin]
+        .some((value) => value.toLocaleLowerCase().includes(search))
+    ) {
+      return false;
+    }
+    return true;
+  });
+
+  const rows = await getJoinedArtifacts(filtered);
+  rows.sort((a, b) => {
+    const featuredDifference =
+      Number(b.artifact.isFeatured) - Number(a.artifact.isFeatured);
+    if (featuredDifference) return featuredDifference;
+    const orderDifference =
+      (a.artifact.featuredOrder ?? Number.MAX_SAFE_INTEGER) -
+      (b.artifact.featuredOrder ?? Number.MAX_SAFE_INTEGER);
+    if (orderDifference) return orderDifference;
+    return b.artifact.updatedAt.getTime() - a.artifact.updatedAt.getTime();
+  });
 
   return {
-    items: rows.map(summaryFromJoined),
-    total: Number(totalRow?.value ?? 0),
+    items: rows
+      .slice((options.page - 1) * options.limit, options.page * options.limit)
+      .map(summaryFromJoined),
+    total: rows.length,
     page: options.page,
     limit: options.limit,
   };
+}
+
+async function findArtifact(reference: string) {
+  return (await getById<ArtifactRow & { id: string }>(
+    collections.artifacts,
+    reference,
+  )) ?? findByField<ArtifactRow & { id: string }>(
+    collections.artifacts,
+    "slug",
+    reference,
+  );
+}
+
+async function findExhibition(reference: string) {
+  return (await getById<ExhibitionRow & { id: string }>(
+    collections.exhibitions,
+    reference,
+  )) ?? findByField<ExhibitionRow & { id: string }>(
+    collections.exhibitions,
+    "slug",
+    reference,
+  );
 }
 
 export async function getArtifactDetails(
   reference: string,
   includeDraft = false,
 ) {
-  const conditions = [artifactReferenceCondition(reference)];
-  if (!includeDraft) conditions.push(eq(artifactsTable.status, "published"));
+  const artifact = await findArtifact(reference);
+  if (!artifact || (!includeDraft && artifact.status !== "published")) {
+    return undefined;
+  }
+  const [joined] = await getJoinedArtifacts([artifact]);
+  if (!joined) return undefined;
 
-  const [row] = (await db
-    .select({
-      artifact: artifactsTable,
-      periodName: historicalPeriodsTable.name,
-      materialName: materialsTable.name,
-      imageUrl: artifactImagesTable.imageUrl,
-    })
-    .from(artifactsTable)
-    .innerJoin(
-      historicalPeriodsTable,
-      eq(artifactsTable.periodId, historicalPeriodsTable.id),
-    )
-    .innerJoin(materialsTable, eq(artifactsTable.materialId, materialsTable.id))
-    .leftJoin(
-      artifactImagesTable,
-      and(
-        eq(artifactImagesTable.artifactId, artifactsTable.id),
-        eq(artifactImagesTable.isPrimary, true),
-      ),
-    )
-    .where(and(...conditions))
-    .limit(1)) as JoinedArtifact[];
-
-  if (!row) return undefined;
-
-  const imageRows = await db
-    .select()
-    .from(artifactImagesTable)
-    .where(eq(artifactImagesTable.artifactId, row.artifact.id))
-    .orderBy(asc(artifactImagesTable.sortOrder), asc(artifactImagesTable.createdAt));
-
-  const imageIds = imageRows.map((image) => image.id);
-  const hotspots = imageIds.length
-    ? await db
-        .select()
-        .from(imageHotspotsTable)
-        .where(inArray(imageHotspotsTable.imageId, imageIds))
-    : [];
-  const hotspotsByImage = new Map<string, typeof hotspots>();
+  const [imageRows, exhibitions] = await Promise.all([
+    getAll<ArtifactImageRow & { id: string }>(collections.artifactImages),
+    getAll<{ id: string; artifactId: string; exhibitionId: string }>(
+      collections.artifactExhibitions,
+    ),
+  ]);
+  const images = imageRows
+    .filter((image) => image.artifactId === artifact.id)
+    .sort(
+      (a, b) =>
+        a.sortOrder - b.sortOrder ||
+        a.createdAt.getTime() - b.createdAt.getTime(),
+    );
+  const imageIds = new Set(images.map((image) => image.id));
+  const hotspots = (
+    await getAll<ImageHotspotRow & { id: string }>(collections.imageHotspots)
+  ).filter((hotspot) => imageIds.has(hotspot.imageId));
+  const hotspotsByImage = new Map<string, ImageHotspotRow[]>();
   for (const hotspot of hotspots) {
     const current = hotspotsByImage.get(hotspot.imageId) ?? [];
     current.push(hotspot);
     hotspotsByImage.set(hotspot.imageId, current);
   }
-  const exhibitionRows = await db
-    .select({ exhibitionId: artifactExhibitionsTable.exhibitionId })
-    .from(artifactExhibitionsTable)
-    .where(eq(artifactExhibitionsTable.artifactId, row.artifact.id));
 
   return {
-    ...summaryFromJoined(row),
-    history: row.artifact.history,
-    origin: row.artifact.origin,
-    dimensions: row.artifact.dimensions,
-    condition: row.artifact.condition,
-    periodId: row.artifact.periodId,
-    materialId: row.artifact.materialId,
-    images: imageRows.map((image) => ({
+    ...summaryFromJoined(joined),
+    history: artifact.history,
+    origin: artifact.origin,
+    dimensions: artifact.dimensions,
+    condition: artifact.condition,
+    periodId: artifact.periodId,
+    materialId: artifact.materialId,
+    images: images.map((image) => ({
       id: image.id,
       imageUrl: image.imageUrl,
       alt: image.alt,
@@ -222,9 +217,11 @@ export async function getArtifactDetails(
         body: hotspot.body,
       })),
     })),
-    exhibitionIds: exhibitionRows.map((item) => item.exhibitionId),
-    createdAt: row.artifact.createdAt,
-    updatedAt: row.artifact.updatedAt,
+    exhibitionIds: exhibitions
+      .filter((link) => link.artifactId === artifact.id)
+      .map((link) => link.exhibitionId),
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
   };
 }
 
@@ -232,35 +229,22 @@ export async function getArtifactSummaryById(
   id: string,
   includeDraft = false,
 ) {
-  const conditions = [eq(artifactsTable.id, id)];
-  if (!includeDraft) conditions.push(eq(artifactsTable.status, "published"));
-  const [row] = (await db
-    .select({
-      artifact: artifactsTable,
-      periodName: historicalPeriodsTable.name,
-      materialName: materialsTable.name,
-      imageUrl: artifactImagesTable.imageUrl,
-    })
-    .from(artifactsTable)
-    .innerJoin(
-      historicalPeriodsTable,
-      eq(artifactsTable.periodId, historicalPeriodsTable.id),
-    )
-    .innerJoin(materialsTable, eq(artifactsTable.materialId, materialsTable.id))
-    .leftJoin(
-      artifactImagesTable,
-      and(
-        eq(artifactImagesTable.artifactId, artifactsTable.id),
-        eq(artifactImagesTable.isPrimary, true),
-      ),
-    )
-    .where(and(...conditions))
-    .limit(1)) as JoinedArtifact[];
+  const artifact = await getById<ArtifactRow & { id: string }>(
+    collections.artifacts,
+    id,
+  );
+  if (!artifact || (!includeDraft && artifact.status !== "published")) {
+    return undefined;
+  }
+  const [row] = await getJoinedArtifacts([artifact]);
   return row ? summaryFromJoined(row) : undefined;
 }
 
 export async function getMuseumIntro() {
-  const [intro] = await db.select().from(museumIntroTable).limit(1);
+  const intro = await getById<MuseumIntroRow & { id: string }>(
+    collections.museumIntro,
+    "intro",
+  );
   if (!intro) return undefined;
   return {
     museumName: intro.museumName,
@@ -272,48 +256,28 @@ export async function getMuseumIntro() {
 }
 
 export async function getExhibitionSummaries(includeDraft = false) {
-  const conditions = includeDraft
-    ? undefined
-    : eq(exhibitionsTable.status, "published");
-  const rows = await db
-    .select()
-    .from(exhibitionsTable)
-    .where(conditions)
-    .orderBy(desc(exhibitionsTable.updatedAt));
-  const counts = rows.length
-    ? await db
-        .select({
-          exhibitionId: artifactExhibitionsTable.exhibitionId,
-          value: count(),
-        })
-        .from(artifactExhibitionsTable)
-        .innerJoin(
-          artifactsTable,
-          eq(artifactExhibitionsTable.artifactId, artifactsTable.id),
-        )
-        .where(
-          and(
-            inArray(
-              artifactExhibitionsTable.exhibitionId,
-              rows.map((row) => row.id),
-            ),
-            ...(includeDraft
-              ? []
-              : [eq(artifactsTable.status, "published")]),
-          ),
-        )
-        .groupBy(artifactExhibitionsTable.exhibitionId)
-    : [];
-  const countByExhibition = new Map(
-    counts.map((item) => [item.exhibitionId, Number(item.value)]),
-  );
-  return rows.map((row) => ({
+  const [rows, exhibitionLinks, artifacts] = await Promise.all([
+    getAll<ExhibitionRow & { id: string }>(collections.exhibitions),
+    getAll<{ id: string; exhibitionId: string; artifactId: string }>(
+      collections.artifactExhibitions,
+    ),
+    getAll<ArtifactRow & { id: string }>(collections.artifacts),
+  ]);
+  const artifactById = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+  const filtered = rows
+    .filter((row) => includeDraft || row.status === "published")
+    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+  return filtered.map((row) => ({
     id: row.id,
     title: row.title,
     slug: row.slug,
     summary: row.summary,
     coverImage: row.coverImage,
-    artifactCount: countByExhibition.get(row.id) ?? 0,
+    artifactCount: exhibitionLinks.filter((link) => {
+      if (link.exhibitionId !== row.id) return false;
+      const artifact = artifactById.get(link.artifactId);
+      return artifact && (includeDraft || artifact.status === "published");
+    }).length,
   }));
 }
 
@@ -321,41 +285,21 @@ export async function getExhibitionDetails(
   reference: string,
   includeDraft = false,
 ) {
-  const [row] = await db
-    .select()
-    .from(exhibitionsTable)
-    .where(
-      and(
-        exhibitionReferenceCondition(reference),
-        ...(includeDraft ? [] : [eq(exhibitionsTable.status, "published")]),
-      ),
-    )
-    .limit(1);
-  if (!row) return undefined;
+  const row = await findExhibition(reference);
+  if (!row || (!includeDraft && row.status !== "published")) return undefined;
 
-  const selectedArtifacts = await db
-    .select({ artifactId: artifactExhibitionsTable.artifactId })
-    .from(artifactExhibitionsTable)
-    .innerJoin(
-      artifactsTable,
-      eq(artifactExhibitionsTable.artifactId, artifactsTable.id),
+  const selectedArtifacts = (
+    await getAll<{ id: string; exhibitionId: string; artifactId: string }>(
+      collections.artifactExhibitions,
     )
-    .where(
-      and(
-        eq(artifactExhibitionsTable.exhibitionId, row.id),
-        ...(includeDraft ? [] : [eq(artifactsTable.status, "published")]),
-      ),
-    );
-  const artifactIds = selectedArtifacts.map((item) => item.artifactId);
-  const summaries = artifactIds.length
-    ? await Promise.all(
-        artifactIds.map((artifactId) =>
-          getArtifactSummaryById(artifactId, includeDraft),
-        ),
-      )
-    : [];
-  const summaryRows = await getExhibitionSummaries(includeDraft);
-  const summary = summaryRows.find((item) => item.id === row.id);
+  ).filter((link) => link.exhibitionId === row.id);
+  const artifacts = await Promise.all(
+    selectedArtifacts.map((link) =>
+      getArtifactSummaryById(link.artifactId, includeDraft),
+    ),
+  );
+  const summaries = await getExhibitionSummaries(includeDraft);
+  const summary = summaries.find((item) => item.id === row.id);
 
   return {
     id: row.id,
@@ -363,12 +307,12 @@ export async function getExhibitionDetails(
     slug: row.slug,
     summary: row.summary,
     coverImage: row.coverImage,
-    artifactCount: summary?.artifactCount ?? artifactIds.length,
+    artifactCount: summary?.artifactCount ?? artifacts.length,
     story: row.story,
     startDate: row.startDate,
     endDate: row.endDate,
     status: row.status as "draft" | "published",
-    artifacts: summaries.filter((item) => item !== undefined),
+    artifacts: artifacts.filter((item) => item !== undefined),
   };
 }
 

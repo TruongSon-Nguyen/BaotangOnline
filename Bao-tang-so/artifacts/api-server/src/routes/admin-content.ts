@@ -1,4 +1,3 @@
-import { eq, inArray } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
   CreateExhibitionBody,
@@ -13,19 +12,29 @@ import {
   UpdateMuseumIntroBody,
   UpdateMuseumIntroResponse,
 } from "@workspace/api-zod";
-import {
-  artifactExhibitionsTable,
-  artifactsTable,
-  db,
-  exhibitionsTable,
-  museumIntroTable,
-} from "@workspace/db";
+import type {
+  ArtifactRow,
+  ExhibitionRow,
+  MuseumIntroRow,
+} from "@workspace/db/schema";
 import {
   getArtifactSummaryById,
   getExhibitionDetails,
   getExhibitionSummaries,
   getMuseumIntro,
 } from "../lib/museumData";
+import {
+  collections,
+  createRecord,
+  db,
+  deleteByField,
+  deleteRecord,
+  findByField,
+  getAll,
+  getById,
+  now,
+  updateRecord,
+} from "../lib/firestore";
 
 const router: IRouter = Router();
 
@@ -54,21 +63,33 @@ router.post("/exhibitions", async (req, res): Promise<void> => {
     startDate: normalizeDate(input.startDate),
     endDate: normalizeDate(input.endDate),
   };
-  const created = await db.transaction(async (tx) => {
-    const [exhibition] = await tx
-      .insert(exhibitionsTable)
-      .values(fields)
-      .returning();
-    if (artifactIds.length) {
-      await tx.insert(artifactExhibitionsTable).values(
-        artifactIds.map((artifactId) => ({
-          exhibitionId: exhibition.id,
-          artifactId,
-        })),
-      );
-    }
-    return exhibition;
+  if (
+    artifactIds.length &&
+    (await Promise.all(
+      artifactIds.map((id) => getById<ArtifactRow>(collections.artifacts, id)),
+    )).some((artifact) => !artifact)
+  ) {
+    res.status(400).json({ error: "One or more artifacts do not exist" });
+    return;
+  }
+  if (await findByField<ExhibitionRow>(collections.exhibitions, "slug", input.slug)) {
+    res.status(409).json({ error: "Exhibition slug already exists" });
+    return;
+  }
+  const timestamp = now();
+  const created = await createRecord(collections.exhibitions, {
+    ...fields,
+    createdAt: timestamp,
+    updatedAt: timestamp,
   });
+  await Promise.all(
+    artifactIds.map((artifactId) =>
+      createRecord(collections.artifactExhibitions, {
+        exhibitionId: created.id,
+        artifactId,
+      }),
+    ),
+  );
   const detail = await getExhibitionDetails(created.id, true);
   res.status(201).json(CreateExhibitionResponse.parse(detail));
 });
@@ -91,30 +112,56 @@ router.patch("/exhibitions/:id", async (req, res): Promise<void> => {
       startDate: normalizeDate(fields.startDate),
       endDate: normalizeDate(fields.endDate),
     }).filter(([, value]) => value !== undefined),
-  ) as Partial<typeof exhibitionsTable.$inferInsert>;
+  ) as Record<string, unknown>;
 
-  const updated = await db.transaction(async (tx) => {
-    const [exhibition] = await tx
-      .update(exhibitionsTable)
-      .set(updates)
-      .where(eq(exhibitionsTable.id, params.data.id))
-      .returning();
-    if (!exhibition) return undefined;
-    if (artifactIds !== undefined) {
-      await tx
-        .delete(artifactExhibitionsTable)
-        .where(eq(artifactExhibitionsTable.exhibitionId, exhibition.id));
-      if (artifactIds.length) {
-        await tx.insert(artifactExhibitionsTable).values(
-          artifactIds.map((artifactId) => ({
-            exhibitionId: exhibition.id,
-            artifactId,
-          })),
-        );
-      }
+  const existing = await getById<ExhibitionRow>(
+    collections.exhibitions,
+    params.data.id,
+  );
+  if (!existing) {
+    res.status(404).json({ error: "Exhibition not found" });
+    return;
+  }
+  if (updates.slug && updates.slug !== existing.slug) {
+    const duplicate = await findByField<ExhibitionRow>(
+      collections.exhibitions,
+      "slug",
+      updates.slug,
+    );
+    if (duplicate) {
+      res.status(409).json({ error: "Exhibition slug already exists" });
+      return;
     }
-    return exhibition;
-  });
+  }
+  if (
+    artifactIds !== undefined &&
+    (await Promise.all(
+      artifactIds.map((id) => getById<ArtifactRow>(collections.artifacts, id)),
+    )).some((artifact) => !artifact)
+  ) {
+    res.status(400).json({ error: "One or more artifacts do not exist" });
+    return;
+  }
+  const updated = await updateRecord<ExhibitionRow>(
+    collections.exhibitions,
+    existing.id,
+    { ...updates, updatedAt: now() },
+  );
+  if (artifactIds !== undefined) {
+    await deleteByField(
+      collections.artifactExhibitions,
+      "exhibitionId",
+      existing.id,
+    );
+    await Promise.all(
+      artifactIds.map((artifactId) =>
+        createRecord(collections.artifactExhibitions, {
+          exhibitionId: existing.id,
+          artifactId,
+        }),
+      ),
+    );
+  }
   if (!updated) {
     res.status(404).json({ error: "Exhibition not found" });
     return;
@@ -129,14 +176,19 @@ router.delete("/exhibitions/:id", async (req, res): Promise<void> => {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [deleted] = await db
-    .delete(exhibitionsTable)
-    .where(eq(exhibitionsTable.id, params.data.id))
-    .returning({ id: exhibitionsTable.id });
+  const deleted = await deleteRecord(
+    collections.exhibitions,
+    params.data.id,
+  );
   if (!deleted) {
     res.status(404).json({ error: "Exhibition not found" });
     return;
   }
+  await deleteByField(
+    collections.artifactExhibitions,
+    "exhibitionId",
+    params.data.id,
+  );
   res.sendStatus(204);
 });
 
@@ -146,16 +198,19 @@ router.patch("/content/intro", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const [existing] = await db.select().from(museumIntroTable).limit(1);
+  const existing = await getById<MuseumIntroRow>(
+    collections.museumIntro,
+    "intro",
+  );
   if (!existing) {
     res.status(503).json({ error: "Museum introduction is not initialized" });
     return;
   }
-  const [updated] = await db
-    .update(museumIntroTable)
-    .set(parsed.data)
-    .where(eq(museumIntroTable.id, existing.id))
-    .returning();
+  const updated = await updateRecord<MuseumIntroRow>(
+    collections.museumIntro,
+    existing.id,
+    { ...parsed.data, updatedAt: now() },
+  );
   const result = await getMuseumIntro();
   res.json(UpdateMuseumIntroResponse.parse(result ?? updated));
 });
@@ -168,26 +223,28 @@ router.patch("/content/featured", async (req, res): Promise<void> => {
   }
   const artifactIds = [...new Set(parsed.data.artifactIds)];
   if (artifactIds.length) {
-    const matching = await db
-      .select({ id: artifactsTable.id })
-      .from(artifactsTable)
-      .where(inArray(artifactsTable.id, artifactIds));
-    if (matching.length !== artifactIds.length) {
+    const matching = await Promise.all(
+      artifactIds.map((id) => getById<ArtifactRow>(collections.artifacts, id)),
+    );
+    if (matching.some((artifact) => !artifact)) {
       res.status(400).json({ error: "One or more artifacts do not exist" });
       return;
     }
   }
-  await db.transaction(async (tx) => {
-    await tx
-      .update(artifactsTable)
-      .set({ isFeatured: false, featuredOrder: null });
-    for (const [index, artifactId] of artifactIds.entries()) {
-      await tx
-        .update(artifactsTable)
-        .set({ isFeatured: true, featuredOrder: index + 1 })
-        .where(eq(artifactsTable.id, artifactId));
+  const artifacts = await getAll<ArtifactRow>(collections.artifacts);
+  const featuredOrder = new Map(artifactIds.map((id, index) => [id, index + 1]));
+  for (let offset = 0; offset < artifacts.length; offset += 400) {
+    const batch = db.batch();
+    for (const artifact of artifacts.slice(offset, offset + 400)) {
+      const order = featuredOrder.get(artifact.id);
+      batch.update(db.collection(collections.artifacts).doc(artifact.id), {
+        isFeatured: order !== undefined,
+        featuredOrder: order ?? null,
+        updatedAt: now(),
+      });
     }
-  });
+    await batch.commit();
+  }
   const featured = await Promise.all(
     artifactIds.map((id) => getArtifactSummaryById(id, true)),
   );

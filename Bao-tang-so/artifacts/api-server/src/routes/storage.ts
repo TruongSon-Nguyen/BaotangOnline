@@ -1,19 +1,17 @@
 import { Readable } from "node:stream";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
   RequestImageUploadUrlBody,
   RequestImageUploadUrlResponse,
 } from "@workspace/api-zod";
-import {
-  artifactImagesTable,
-  artifactsTable,
-  db,
-  exhibitionsTable,
-  museumIntroTable,
-} from "@workspace/db";
+import type {
+  ArtifactImageRow,
+  ArtifactRow,
+  ExhibitionRow,
+  MuseumIntroRow,
+} from "@workspace/db/schema";
 import { getAuthenticatedAccount } from "./auth";
 import { localUploadDirectory } from "../lib/localUploads";
 import { requireMuseumAdmin } from "../lib/museumAdmin";
@@ -21,6 +19,7 @@ import {
   ObjectNotFoundError,
   ObjectStorageService,
 } from "../lib/objectStorage";
+import { collections, getAll, getById } from "../lib/firestore";
 
 const router: IRouter = Router();
 const objectStorage = new ObjectStorageService();
@@ -60,40 +59,29 @@ router.post(
 );
 
 async function isPublishedImage(imageUrl: string): Promise<boolean> {
-  const [artifactImage] = await db
-    .select({ id: artifactImagesTable.id })
-    .from(artifactImagesTable)
-    .innerJoin(
-      artifactsTable,
-      eq(artifactImagesTable.artifactId, artifactsTable.id),
-    )
-    .where(
-      and(
-        eq(artifactImagesTable.imageUrl, imageUrl),
-        eq(artifactsTable.status, "published"),
-      ),
-    )
-    .limit(1);
-  if (artifactImage) return true;
-
-  const [exhibitionCover] = await db
-    .select({ id: exhibitionsTable.id })
-    .from(exhibitionsTable)
-    .where(
-      and(
-        eq(exhibitionsTable.coverImage, imageUrl),
-        eq(exhibitionsTable.status, "published"),
-      ),
-    )
-    .limit(1);
-  if (exhibitionCover) return true;
-
-  const [intro] = await db
-    .select({ id: museumIntroTable.id })
-    .from(museumIntroTable)
-    .where(eq(museumIntroTable.heroImage, imageUrl))
-    .limit(1);
-  return Boolean(intro);
+  const [artifactImages, artifacts, exhibitions, intro] = await Promise.all([
+    getAll<ArtifactImageRow>(collections.artifactImages),
+    getAll<ArtifactRow>(collections.artifacts),
+    getAll<ExhibitionRow>(collections.exhibitions),
+    getById<MuseumIntroRow>(collections.museumIntro, "intro"),
+  ]);
+  const publishedArtifactIds = new Set(
+    artifacts
+      .filter((artifact) => artifact.status === "published")
+      .map((artifact) => artifact.id),
+  );
+  return (
+    artifactImages.some(
+      (image) =>
+        image.imageUrl === imageUrl && publishedArtifactIds.has(image.artifactId),
+    ) ||
+    exhibitions.some(
+      (exhibition) =>
+        exhibition.coverImage === imageUrl &&
+        exhibition.status === "published",
+    ) ||
+    intro?.heroImage === imageUrl
+  );
 }
 
 async function isMuseumAdmin(req: Parameters<Parameters<typeof router.get>[1]>[0]) {

@@ -1,4 +1,3 @@
-import { asc } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
   GetArtifactParams,
@@ -13,11 +12,11 @@ import {
   ListMaterialsResponse,
   ListPeriodsResponse,
 } from "@workspace/api-zod";
-import {
-  db,
-  historicalPeriodsTable,
-  materialsTable,
-} from "@workspace/db";
+import type {
+  HistoricalPeriodRow,
+  MaterialRow,
+} from "@workspace/db/schema";
+import { collections, getAll } from "../lib/firestore";
 import {
   getArtifactDetails,
   getExhibitionDetails,
@@ -88,18 +87,14 @@ router.get("/artifacts/:id", async (req, res): Promise<void> => {
 });
 
 router.get("/periods", async (_req, res): Promise<void> => {
-  const periods = await db
-    .select()
-    .from(historicalPeriodsTable)
-    .orderBy(asc(historicalPeriodsTable.startYear));
+  const periods = (await getAll<HistoricalPeriodRow>(collections.historicalPeriods))
+    .sort((a, b) => a.startYear - b.startYear);
   res.json(ListPeriodsResponse.parse(periods));
 });
 
 router.get("/materials", async (_req, res): Promise<void> => {
-  const materials = await db
-    .select()
-    .from(materialsTable)
-    .orderBy(asc(materialsTable.name));
+  const materials = (await getAll<MaterialRow>(collections.materials))
+    .sort((a, b) => a.name.localeCompare(b.name));
   res.json(ListMaterialsResponse.parse(materials));
 });
 

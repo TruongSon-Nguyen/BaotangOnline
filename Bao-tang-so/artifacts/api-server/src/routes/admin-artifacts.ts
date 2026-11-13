@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { asc, count, eq } from "drizzle-orm";
 import express, { Router, type IRouter } from "express";
 import {
   AddArtifactImageBody,
@@ -31,17 +30,28 @@ import {
   UpdateImageHotspotParams,
   UpdateImageHotspotResponse,
 } from "@workspace/api-zod";
-import {
-  artifactExhibitionsTable,
-  artifactImagesTable,
-  artifactsTable,
-  db,
-  exhibitionsTable,
-  imageHotspotsTable,
-} from "@workspace/db";
+import type {
+  ArtifactImageRow,
+  ArtifactRow,
+  ExhibitionRow,
+  ImageHotspotRow,
+} from "@workspace/db/schema";
 import { getArtifactDetails, listArtifactSummaries } from "../lib/museumData";
 import { localUploadDirectory } from "../lib/localUploads";
 import { ObjectStorageService } from "../lib/objectStorage";
+import {
+  collections,
+  createRecord,
+  db,
+  deleteByField,
+  deleteRecord,
+  findByField,
+  getAll,
+  getById,
+  newId,
+  now,
+  updateRecord,
+} from "../lib/firestore";
 
 const router: IRouter = Router();
 const objectStorage = new ObjectStorageService();
@@ -146,20 +156,11 @@ router.get("/session", async (_req, res): Promise<void> => {
 });
 
 router.get("/overview", async (_req, res): Promise<void> => {
-  const [artifactCount, publishedCount, draftCount, exhibitionCount, imageCount] =
-    await Promise.all([
-      db.select({ value: count() }).from(artifactsTable),
-      db
-        .select({ value: count() })
-        .from(artifactsTable)
-        .where(eq(artifactsTable.status, "published")),
-      db
-        .select({ value: count() })
-        .from(artifactsTable)
-        .where(eq(artifactsTable.status, "draft")),
-      db.select({ value: count() }).from(exhibitionsTable),
-      db.select({ value: count() }).from(artifactImagesTable),
-    ]);
+  const [artifacts, exhibitions, images] = await Promise.all([
+    getAll<ArtifactRow>(collections.artifacts),
+    getAll<ExhibitionRow>(collections.exhibitions),
+    getAll<ArtifactImageRow>(collections.artifactImages),
+  ]);
   const recentArtifacts = await listArtifactSummaries({
     includeDraft: true,
     page: 1,
@@ -167,11 +168,11 @@ router.get("/overview", async (_req, res): Promise<void> => {
   });
   res.json(
     GetAdminOverviewResponse.parse({
-      artifactCount: Number(artifactCount[0]?.value ?? 0),
-      publishedCount: Number(publishedCount[0]?.value ?? 0),
-      draftCount: Number(draftCount[0]?.value ?? 0),
-      exhibitionCount: Number(exhibitionCount[0]?.value ?? 0),
-      imageCount: Number(imageCount[0]?.value ?? 0),
+      artifactCount: artifacts.length,
+      publishedCount: artifacts.filter((item) => item.status === "published").length,
+      draftCount: artifacts.filter((item) => item.status === "draft").length,
+      exhibitionCount: exhibitions.length,
+      imageCount: images.length,
       recentArtifacts: recentArtifacts.items,
     }),
   );
@@ -218,34 +219,39 @@ router.post("/artifacts", async (req, res): Promise<void> => {
     return;
   }
 
-  const artifact = await db.transaction(async (tx) => {
-    const [created] = await tx
-      .insert(artifactsTable)
-      .values({
-        ...fields,
-        status: "published",
-        isFeatured: true,
-        featuredOrder: -1,
-      })
-      .returning();
-    await tx.insert(artifactImagesTable).values({
-      artifactId: created.id,
-      imageUrl,
-      alt: fields.name,
-      caption: "",
-      isPrimary: true,
-      sortOrder: 0,
-    });
-    if (exhibitionIds.length) {
-      await tx.insert(artifactExhibitionsTable).values(
-        exhibitionIds.map((exhibitionId) => ({
-          artifactId: created.id,
-          exhibitionId,
-        })),
-      );
-    }
-    return created;
+  if (await findByField<ArtifactRow>(collections.artifacts, "slug", fields.slug)) {
+    res.status(409).json({ error: "Artifact slug already exists" });
+    return;
+  }
+  const timestamp = now();
+  const artifact = await createRecord(collections.artifacts, {
+    ...fields,
+    dimensions: fields.dimensions ?? null,
+    condition: fields.condition ?? null,
+    isSample: false,
+    status: "published",
+    isFeatured: true,
+    featuredOrder: -1,
+    createdAt: timestamp,
+    updatedAt: timestamp,
   });
+  await createRecord(collections.artifactImages, {
+    artifactId: artifact.id,
+    imageUrl,
+    alt: fields.name,
+    caption: "",
+    isPrimary: true,
+    sortOrder: 0,
+    createdAt: timestamp,
+  });
+  await Promise.all(
+    exhibitionIds.map((exhibitionId) =>
+      createRecord(collections.artifactExhibitions, {
+        artifactId: artifact.id,
+        exhibitionId,
+      }),
+    ),
+  );
   const full = await getArtifactDetails(artifact.id, true);
   res.status(201).json(CreateArtifactResponse.parse(full));
 });
@@ -264,29 +270,55 @@ router.patch("/artifacts/:id", async (req, res): Promise<void> => {
   const { exhibitionIds, ...fields } = parsed.data;
   const updates = Object.fromEntries(
     Object.entries(fields).filter(([, value]) => value !== undefined),
-  ) as Partial<typeof artifactsTable.$inferInsert>;
-  const updated = await db.transaction(async (tx) => {
-    const [artifact] = await tx
-      .update(artifactsTable)
-      .set(updates)
-      .where(eq(artifactsTable.id, params.data.id))
-      .returning();
-    if (!artifact) return undefined;
-    if (exhibitionIds !== undefined) {
-      await tx
-        .delete(artifactExhibitionsTable)
-        .where(eq(artifactExhibitionsTable.artifactId, artifact.id));
-      if (exhibitionIds.length) {
-        await tx.insert(artifactExhibitionsTable).values(
-          exhibitionIds.map((exhibitionId) => ({
-            artifactId: artifact.id,
-            exhibitionId,
-          })),
-        );
-      }
+  ) as Record<string, unknown>;
+  const existing = await getById<ArtifactRow>(
+    collections.artifacts,
+    params.data.id,
+  );
+  if (!existing) {
+    res.status(404).json({ error: "Artifact not found" });
+    return;
+  }
+  if (updates.slug && updates.slug !== existing.slug) {
+    const duplicate = await findByField<ArtifactRow>(
+      collections.artifacts,
+      "slug",
+      updates.slug,
+    );
+    if (duplicate) {
+      res.status(409).json({ error: "Artifact slug already exists" });
+      return;
     }
-    return artifact;
-  });
+  }
+  if (
+    exhibitionIds !== undefined &&
+    (await Promise.all(
+      exhibitionIds.map((id) => getById<ExhibitionRow>(collections.exhibitions, id)),
+    )).some((item) => !item)
+  ) {
+    res.status(400).json({ error: "One or more exhibitions do not exist" });
+    return;
+  }
+  const updated = await updateRecord<ArtifactRow>(
+    collections.artifacts,
+    existing.id,
+    { ...updates, updatedAt: now() },
+  );
+  if (exhibitionIds !== undefined) {
+    await deleteByField(
+      collections.artifactExhibitions,
+      "artifactId",
+      existing.id,
+    );
+    await Promise.all(
+      exhibitionIds.map((exhibitionId) =>
+        createRecord(collections.artifactExhibitions, {
+          artifactId: existing.id,
+          exhibitionId,
+        }),
+      ),
+    );
+  }
   if (!updated) {
     res.status(404).json({ error: "Artifact not found" });
     return;
@@ -301,14 +333,33 @@ router.delete("/artifacts/:id", async (req, res): Promise<void> => {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [deleted] = await db
-    .delete(artifactsTable)
-    .where(eq(artifactsTable.id, params.data.id))
-    .returning({ id: artifactsTable.id });
+  const deleted = await deleteRecord(
+    collections.artifacts,
+    params.data.id,
+  );
   if (!deleted) {
     res.status(404).json({ error: "Artifact not found" });
     return;
   }
+  const images = await getAll<ArtifactImageRow>(collections.artifactImages);
+  const artifactImages = images.filter(
+    (image) => image.artifactId === params.data.id,
+  );
+  await Promise.all([
+    ...artifactImages.map((image) =>
+      deleteByField(collections.imageHotspots, "imageId", image.id),
+    ),
+    deleteByField(
+      collections.artifactExhibitions,
+      "artifactId",
+      params.data.id,
+    ),
+  ]);
+  const batch = db.batch();
+  for (const image of artifactImages) {
+    batch.delete(db.collection(collections.artifactImages).doc(image.id));
+  }
+  if (artifactImages.length) await batch.commit();
   res.sendStatus(204);
 });
 
@@ -323,11 +374,10 @@ router.post("/artifacts/:id/images", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const [artifact] = await db
-    .select({ id: artifactsTable.id })
-    .from(artifactsTable)
-    .where(eq(artifactsTable.id, params.data.id))
-    .limit(1);
+  const artifact = await getById<ArtifactRow>(
+    collections.artifacts,
+    params.data.id,
+  );
   if (!artifact) {
     res.status(404).json({ error: "Artifact not found" });
     return;
@@ -340,31 +390,32 @@ router.post("/artifacts/:id/images", async (req, res): Promise<void> => {
     return;
   }
 
-  const existingImages = await db
-    .select({ id: artifactImagesTable.id })
-    .from(artifactImagesTable)
-    .where(eq(artifactImagesTable.artifactId, params.data.id));
+  const existingImages = (await getAll<ArtifactImageRow>(
+    collections.artifactImages,
+  )).filter((image) => image.artifactId === params.data.id);
   const isPrimary = parsed.data.isPrimary || existingImages.length === 0;
-  const image = await db.transaction(async (tx) => {
-    if (isPrimary) {
-      await tx
-        .update(artifactImagesTable)
-        .set({ isPrimary: false })
-        .where(eq(artifactImagesTable.artifactId, params.data.id));
+  const id = newId();
+  const image: ArtifactImageRow = {
+    id,
+    artifactId: params.data.id,
+    imageUrl,
+    alt: parsed.data.alt,
+    caption: parsed.data.caption,
+    isPrimary,
+    sortOrder: existingImages.length,
+    createdAt: now(),
+  };
+  const batch = db.batch();
+  if (isPrimary) {
+    for (const existing of existingImages) {
+      batch.update(
+        db.collection(collections.artifactImages).doc(existing.id),
+        { isPrimary: false },
+      );
     }
-    const [created] = await tx
-      .insert(artifactImagesTable)
-      .values({
-        artifactId: params.data.id,
-        imageUrl,
-        alt: parsed.data.alt,
-        caption: parsed.data.caption,
-        isPrimary,
-        sortOrder: existingImages.length,
-      })
-      .returning();
-    return created;
-  });
+  }
+  batch.create(db.collection(collections.artifactImages).doc(id), image);
+  await batch.commit();
   res
     .status(201)
     .json(AddArtifactImageResponse.parse({ ...image, hotspots: [] }));
@@ -381,11 +432,10 @@ router.patch("/images/:id", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const [existing] = await db
-    .select()
-    .from(artifactImagesTable)
-    .where(eq(artifactImagesTable.id, params.data.id))
-    .limit(1);
+  const existing = await getById<ArtifactImageRow>(
+    collections.artifactImages,
+    params.data.id,
+  );
   if (!existing) {
     res.status(404).json({ error: "Image not found" });
     return;
@@ -393,29 +443,37 @@ router.patch("/images/:id", async (req, res): Promise<void> => {
   const { sortOrder, isPrimary, ...fields } = parsed.data;
   const updates = Object.fromEntries(
     Object.entries(fields).filter(([, value]) => value !== undefined),
-  ) as Partial<typeof artifactImagesTable.$inferInsert>;
-  const image = await db.transaction(async (tx) => {
-    if (isPrimary === true) {
-      await tx
-        .update(artifactImagesTable)
-        .set({ isPrimary: false })
-        .where(eq(artifactImagesTable.artifactId, existing.artifactId));
+  ) as Record<string, unknown>;
+  const imageUpdates = {
+    ...updates,
+    ...(sortOrder === undefined ? {} : { sortOrder }),
+    ...(isPrimary === undefined ? {} : { isPrimary }),
+  };
+  if (isPrimary === true) {
+    const siblings = (await getAll<ArtifactImageRow>(
+      collections.artifactImages,
+    )).filter((item) => item.artifactId === existing.artifactId);
+    const batch = db.batch();
+    for (const sibling of siblings) {
+      batch.update(db.collection(collections.artifactImages).doc(sibling.id), {
+        isPrimary: false,
+      });
     }
-    const [updated] = await tx
-      .update(artifactImagesTable)
-      .set({
-        ...updates,
-        ...(sortOrder === undefined ? {} : { sortOrder }),
-        ...(isPrimary === undefined ? {} : { isPrimary }),
-      })
-      .where(eq(artifactImagesTable.id, params.data.id))
-      .returning();
-    return updated;
-  });
-  const hotspots = await db
-    .select()
-    .from(imageHotspotsTable)
-    .where(eq(imageHotspotsTable.imageId, image.id));
+    batch.update(
+      db.collection(collections.artifactImages).doc(params.data.id),
+      { ...imageUpdates, isPrimary: true },
+    );
+    await batch.commit();
+  } else {
+    await db
+      .collection(collections.artifactImages)
+      .doc(params.data.id)
+      .update(imageUpdates);
+  }
+  const image = { ...existing, ...imageUpdates };
+  const hotspots = (await getAll<ImageHotspotRow>(
+    collections.imageHotspots,
+  )).filter((hotspot) => hotspot.imageId === image.id);
   res.json(UpdateArtifactImageResponse.parse({ ...image, hotspots }));
 });
 
@@ -425,28 +483,30 @@ router.delete("/images/:id", async (req, res): Promise<void> => {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [existing] = await db
-    .select()
-    .from(artifactImagesTable)
-    .where(eq(artifactImagesTable.id, params.data.id))
-    .limit(1);
+  const existing = await getById<ArtifactImageRow>(
+    collections.artifactImages,
+    params.data.id,
+  );
   if (!existing) {
     res.status(404).json({ error: "Image not found" });
     return;
   }
-  await db.delete(artifactImagesTable).where(eq(artifactImagesTable.id, existing.id));
+  await deleteRecord(collections.artifactImages, existing.id);
+  await deleteByField(collections.imageHotspots, "imageId", existing.id);
   if (existing.isPrimary) {
-    const [nextImage] = await db
-      .select({ id: artifactImagesTable.id })
-      .from(artifactImagesTable)
-      .where(eq(artifactImagesTable.artifactId, existing.artifactId))
-      .orderBy(asc(artifactImagesTable.sortOrder), asc(artifactImagesTable.createdAt))
-      .limit(1);
+    const [nextImage] = (await getAll<ArtifactImageRow>(
+      collections.artifactImages,
+    ))
+      .filter((image) => image.artifactId === existing.artifactId)
+      .sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder ||
+          a.createdAt.getTime() - b.createdAt.getTime(),
+      );
     if (nextImage) {
-      await db
-        .update(artifactImagesTable)
-        .set({ isPrimary: true })
-        .where(eq(artifactImagesTable.id, nextImage.id));
+      await db.collection(collections.artifactImages).doc(nextImage.id).update({
+        isPrimary: true,
+      });
     }
   }
   res.sendStatus(204);
@@ -463,19 +523,18 @@ router.post("/images/:id/hotspots", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const [image] = await db
-    .select({ id: artifactImagesTable.id })
-    .from(artifactImagesTable)
-    .where(eq(artifactImagesTable.id, params.data.id))
-    .limit(1);
+  const image = await getById<ArtifactImageRow>(
+    collections.artifactImages,
+    params.data.id,
+  );
   if (!image) {
     res.status(404).json({ error: "Image not found" });
     return;
   }
-  const [hotspot] = await db
-    .insert(imageHotspotsTable)
-    .values({ imageId: image.id, ...parsed.data })
-    .returning();
+  const hotspot = await createRecord(collections.imageHotspots, {
+    imageId: image.id,
+    ...parsed.data,
+  });
   res.status(201).json(AddImageHotspotResponse.parse(hotspot));
 });
 
@@ -492,12 +551,12 @@ router.patch("/hotspots/:id", async (req, res): Promise<void> => {
   }
   const updates = Object.fromEntries(
     Object.entries(parsed.data).filter(([, value]) => value !== undefined),
-  ) as Partial<typeof imageHotspotsTable.$inferInsert>;
-  const [hotspot] = await db
-    .update(imageHotspotsTable)
-    .set(updates)
-    .where(eq(imageHotspotsTable.id, params.data.id))
-    .returning();
+  ) as Record<string, unknown>;
+  const hotspot = await updateRecord<ImageHotspotRow>(
+    collections.imageHotspots,
+    params.data.id,
+    updates,
+  );
   if (!hotspot) {
     res.status(404).json({ error: "Image annotation not found" });
     return;
@@ -511,10 +570,10 @@ router.delete("/hotspots/:id", async (req, res): Promise<void> => {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [deleted] = await db
-    .delete(imageHotspotsTable)
-    .where(eq(imageHotspotsTable.id, params.data.id))
-    .returning({ id: imageHotspotsTable.id });
+  const deleted = await deleteRecord(
+    collections.imageHotspots,
+    params.data.id,
+  );
   if (!deleted) {
     res.status(404).json({ error: "Image annotation not found" });
     return;

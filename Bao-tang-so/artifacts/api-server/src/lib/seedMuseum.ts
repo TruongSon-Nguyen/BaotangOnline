@@ -1,16 +1,21 @@
-import { eq } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import type {
+  ArtifactImageRow,
+  ArtifactRow,
+  ExhibitionRow,
+  HistoricalPeriodRow,
+  ImageHotspotRow,
+  MaterialRow,
+} from "@workspace/db/schema";
 import {
-  artifactExhibitionsTable,
-  artifactImagesTable,
-  artifactsTable,
+  collections,
+  createRecord,
   db,
-  exhibitionsTable,
-  historicalPeriodsTable,
-  imageHotspotsTable,
-  materialsTable,
-  museumAdminsTable,
-  museumIntroTable,
-} from "@workspace/db";
+  findByField,
+  getAll,
+  getById,
+  now,
+} from "./firestore";
 
 export const INITIAL_ADMIN_EMAIL = "congiomuathu@gmail.com";
 
@@ -87,21 +92,32 @@ const sampleArtifacts = [
 ];
 
 export async function seedMuseumContent(): Promise<void> {
-  await db
-    .insert(museumAdminsTable)
-    .values({
-      email: INITIAL_ADMIN_EMAIL,
+  const adminEmail = INITIAL_ADMIN_EMAIL.toLowerCase();
+  const adminId = createHash("sha256").update(adminEmail).digest("hex");
+  const adminRef = db.collection(collections.museumAdmins).doc(adminId);
+  const adminSnapshot = await adminRef.get();
+  if (!adminSnapshot.exists) {
+    await adminRef.create({
+      id: adminId,
+      email: adminEmail,
       status: "active",
-    })
-    .onConflictDoNothing({ target: museumAdminsTable.email });
+      createdAt: now(),
+      updatedAt: now(),
+    });
+  }
 
-  const [intro] = await db.select().from(museumIntroTable).limit(1);
+  const intro = await getById<Record<string, unknown> & { id: string }>(
+    collections.museumIntro,
+    "intro",
+  );
   if (!intro) {
-    await db.insert(museumIntroTable).values({
+    await db.collection(collections.museumIntro).doc("intro").create({
+      id: "intro",
       museumName: "Bảo tàng số",
       tagline: "Di sản Việt Nam, gần hơn một chạm.",
       story: `Một không gian số để khám phá hiện vật, câu chuyện và chất liệu tạo nên ký ức Việt. ${sampleNotice}`,
       heroImage: "/images/museum-hero.jpg",
+      updatedAt: now(),
     });
   }
 
@@ -111,13 +127,16 @@ export async function seedMuseumContent(): Promise<void> {
     { name: "Thế kỷ XVIII–XIX (mẫu)", startYear: 1700, endYear: 1900 },
   ];
   for (const period of periods) {
-    await db
-      .insert(historicalPeriodsTable)
-      .values({
+    if (!(await findByField<HistoricalPeriodRow>(
+      collections.historicalPeriods,
+      "name",
+      period.name,
+    ))) {
+      await createRecord(collections.historicalPeriods, {
         ...period,
         description: "Mốc phân loại minh họa, cần hiệu chỉnh theo dữ liệu chính thức.",
-      })
-      .onConflictDoNothing({ target: historicalPeriodsTable.name });
+      });
+    }
   }
 
   const materials = [
@@ -126,14 +145,19 @@ export async function seedMuseumContent(): Promise<void> {
     { name: "Gỗ sơn son (mẫu)", description: "Chất liệu phân loại minh họa." },
   ];
   for (const material of materials) {
-    await db
-      .insert(materialsTable)
-      .values(material)
-      .onConflictDoNothing({ target: materialsTable.name });
+    if (!(await findByField<MaterialRow>(
+      collections.materials,
+      "name",
+      material.name,
+    ))) {
+      await createRecord(collections.materials, material);
+    }
   }
 
-  const periodRows = await db.select().from(historicalPeriodsTable);
-  const materialRows = await db.select().from(materialsTable);
+  const [periodRows, materialRows] = await Promise.all([
+    getAll<HistoricalPeriodRow>(collections.historicalPeriods),
+    getAll<MaterialRow>(collections.materials),
+  ]);
   const periodIds = new Map(periodRows.map((row) => [row.name, row.id]));
   const materialIds = new Map(materialRows.map((row) => [row.name, row.id]));
 
@@ -145,9 +169,13 @@ export async function seedMuseumContent(): Promise<void> {
       throw new Error(`Missing sample taxonomy for ${sample.slug}`);
     }
 
-    await db
-      .insert(artifactsTable)
-      .values({
+    let artifact = await findByField<ArtifactRow>(
+      collections.artifacts,
+      "slug",
+      sample.slug,
+    );
+    if (!artifact) {
+      artifact = await createRecord(collections.artifacts, {
         name: sample.name,
         slug: sample.slug,
         summary: sample.summary,
@@ -162,45 +190,38 @@ export async function seedMuseumContent(): Promise<void> {
         isSample: true,
         isFeatured: true,
         featuredOrder: index + 1,
-      })
-      .onConflictDoNothing({ target: artifactsTable.slug });
+        createdAt: now(),
+        updatedAt: now(),
+      });
+    }
 
-    const [artifact] = await db
-      .select()
-      .from(artifactsTable)
-      .where(eq(artifactsTable.slug, sample.slug))
-      .limit(1);
-    if (!artifact) continue;
-
-    const [existingImage] = await db
-      .select()
-      .from(artifactImagesTable)
-      .where(eq(artifactImagesTable.artifactId, artifact.id))
-      .limit(1);
+    const existingImage = await findByField<ArtifactImageRow>(
+      collections.artifactImages,
+      "artifactId",
+      artifact.id,
+    );
     let imageId = existingImage?.id;
     if (!existingImage) {
-      const [image] = await db
-        .insert(artifactImagesTable)
-        .values({
+      const image = await createRecord(collections.artifactImages, {
           artifactId: artifact.id,
           imageUrl: sample.imageUrl,
           alt: `${sample.name} — hình ảnh mẫu minh họa`,
           caption: sample.caption,
           isPrimary: true,
           sortOrder: 0,
-        })
-        .returning();
+          createdAt: now(),
+        });
       imageId = image.id;
     }
 
     if (imageId) {
-      const [existingHotspot] = await db
-        .select()
-        .from(imageHotspotsTable)
-        .where(eq(imageHotspotsTable.imageId, imageId))
-        .limit(1);
+      const existingHotspot = await findByField<ImageHotspotRow>(
+        collections.imageHotspots,
+        "imageId",
+        imageId,
+      );
       if (!existingHotspot) {
-        await db.insert(imageHotspotsTable).values({
+        await createRecord(collections.imageHotspots, {
           imageId,
           ...sample.hotspot,
         });
@@ -230,33 +251,45 @@ export async function seedMuseumContent(): Promise<void> {
   ];
 
   for (const sample of exhibitionSeeds) {
-    await db
-      .insert(exhibitionsTable)
-      .values({
+    let exhibition = await findByField<ExhibitionRow>(
+      collections.exhibitions,
+      "slug",
+      sample.slug,
+    );
+    if (!exhibition) {
+      exhibition = await createRecord(collections.exhibitions, {
         title: sample.title,
         slug: sample.slug,
         summary: sample.summary,
         story: sample.story,
         coverImage: sample.coverImage,
+        startDate: null,
+        endDate: null,
         status: "published",
-      })
-      .onConflictDoNothing({ target: exhibitionsTable.slug });
-
-    const [exhibition] = await db
-      .select()
-      .from(exhibitionsTable)
-      .where(eq(exhibitionsTable.slug, sample.slug))
-      .limit(1);
-    const [artifact] = await db
-      .select()
-      .from(artifactsTable)
-      .where(eq(artifactsTable.slug, sample.artifactSlug))
-      .limit(1);
+        createdAt: now(),
+        updatedAt: now(),
+      });
+    }
+    const artifact = await findByField<ArtifactRow>(
+      collections.artifacts,
+      "slug",
+      sample.artifactSlug,
+    );
     if (exhibition && artifact) {
-      await db
-        .insert(artifactExhibitionsTable)
-        .values({ exhibitionId: exhibition.id, artifactId: artifact.id })
-        .onConflictDoNothing();
+      const links = await getAll<{
+        id: string;
+        exhibitionId: string;
+        artifactId: string;
+      }>(collections.artifactExhibitions);
+      if (!links.some(
+        (link) =>
+          link.exhibitionId === exhibition.id && link.artifactId === artifact.id,
+      )) {
+        await createRecord(collections.artifactExhibitions, {
+          exhibitionId: exhibition.id,
+          artifactId: artifact.id,
+        });
+      }
     }
   }
 }
