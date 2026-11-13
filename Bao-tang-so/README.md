@@ -10,10 +10,6 @@
 - [Cấu trúc dự án](#cấu-trúc-dự-án)
 - [Mô hình dữ liệu](#mô-hình-dữ-liệu)
 - [Cài đặt và chạy](#cài-đặt-và-chạy)
-- [Cấu hình môi trường](#cấu-hình-môi-trường)
-- [Chạy ứng dụng](#chạy-ứng-dụng)
-- [Kiểm tra và build](#kiểm-tra-và-build)
-- [Dừng ứng dụng và xử lý lỗi thường gặp](#dừng-ứng-dụng-và-xử-lý-lỗi-thường-gặp)
 - [Lưu ý vận hành](#lưu-ý-vận-hành)
 - [API chính](#api-chính)
 
@@ -90,87 +86,58 @@ API lưu dữ liệu trong các collection Firestore: `artifacts`, `artifactImag
 
 ## Cài đặt và chạy
 
-### Yêu cầu
+### 1. Cài công cụ
 
-- Git
-- Node.js 24.x
-- pnpm 12.x
-- Firebase project có Cloud Firestore ở Native mode.
-- Firebase service-account credentials để API truy cập Firestore.
-
-Cài pnpm 12 nếu máy chưa có:
+Cài Node.js 24.x, sau đó cài pnpm:
 
 ```bash
-npm install --global pnpm@12
+npm install -g pnpm@12
 ```
 
-Các lệnh dưới đây chạy từ thư mục workspace (thư mục chứa `pnpm-workspace.yaml`).
-
-### Lấy mã nguồn và cài dependencies
+### 2. Tải mã nguồn và cài thư viện
 
 ```bash
 git clone https://github.com/TruongSon-Nguyen/BaotangOnline.git
-cd BaotangOnline/Bao-tang-so
+cd BaotangOnline
 pnpm install
 ```
 
-Nếu mã nguồn đã có trên máy, chỉ cần mở terminal ở thư mục gốc và chạy `pnpm install`.
+Nếu đã có mã nguồn, mở terminal tại thư mục gốc repository rồi chạy `pnpm install`.
 
-### Cấu hình API
+### 3. Cấu hình Firebase
 
-Tải service-account key từ Firebase Console → Project settings → Service accounts
-và lưu riêng tại `.local/firebase-service-account.json`. Không commit hoặc gửi
-file này qua chat. Thư mục `.local/` đã được Git ignore.
+Để chạy đầy đủ chức năng, cần có Firebase project bật Cloud Firestore. Tải
+service-account key tại **Firebase Console → Project settings → Service accounts**,
+rồi lưu hai file sau trong thư mục `Bao-tang-so/.local/`:
 
-Tạo file `.local/api.env` ở thư mục workspace:
+`firebase-service-account.json` là file key vừa tải. Tạo thêm file `api.env`:
 
 ```env
 PORT=5000
-FIREBASE_PROJECT_ID=baotangonline12345
+FIREBASE_PROJECT_ID=your-firebase-project-id
 GOOGLE_APPLICATION_CREDENTIALS=../../.local/firebase-service-account.json
 ```
 
-Đường dẫn credential ở trên được tính từ thư mục package API khi chạy lệnh
-workspace. Không commit file `.local/api.env`.
+Không đưa các file trong `.local/` lên Git. Nếu chỉ muốn xem giao diện, có thể
+bỏ qua bước Firebase; các chức năng cần dữ liệu từ API sẽ không hoạt động.
 
-## Cấu hình môi trường
+### 4. Chạy ứng dụng
 
-| Biến | Bắt buộc | Mô tả |
-|---|---|---|
-| `FIREBASE_PROJECT_ID` | Có | Firebase project ID. |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Có khi chạy local | Đường dẫn service-account JSON; khi triển khai, ưu tiên Application Default Credentials của môi trường. |
-| `PORT` | Có khi chạy API | Cổng mà API server lắng nghe. |
-| `AUTH_JWT_SECRET` | Production | Bí mật ký phiên đăng nhập; tối thiểu 32 bytes. Trong development nếu không đặt, phiên đăng nhập sẽ mất hiệu lực khi API khởi động lại. |
-| `BAOTANG_UPLOAD_DIR` | Không | Thư mục lưu ảnh upload local; mặc định là `.local/uploads` trong working directory của API. |
-| `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` | Tùy chọn | Khi cung cấp cặp khóa hợp lệ, server bật Clerk middleware. |
-| `PRIVATE_OBJECT_DIR` | Chỉ khi dùng Object Storage | Đường dẫn bucket riêng dùng bởi luồng tạo Signed URL. |
+Mở **hai terminal** tại thư mục gốc repository.
 
-`pnpm --filter @workspace/api-server start` tự đọc `.local/api.env`. Khi khởi
-động, API tạo các collection và nội dung mẫu nếu dữ liệu chưa tồn tại.
-
-## Chạy ứng dụng
-
-Mở **hai terminal** tại thư mục gốc repository. API mặc định chạy ở cổng `5000`; giao diện dùng cổng `5173` và proxy request `/api` đến API.
-
-**Terminal 1 — API server** (chạy được trên Windows, macOS và Linux):
+**Terminal 1 — API** (cần cấu hình Firebase ở bước 3):
 
 ```bash
-pnpm --filter @workspace/api-server build
-pnpm --filter @workspace/api-server start
+pnpm --filter @workspace/api-server dev
 ```
 
-API đọc cấu hình Firebase và `PORT` từ `.local/api.env`. Khi khởi động, server
-sẽ thêm nội dung mẫu nếu database chưa có dữ liệu.
-
-**Terminal 2 — giao diện:**
-
-macOS/Linux (Bash):
+**Terminal 2 — giao diện** (macOS/Linux):
 
 ```bash
 PORT=5173 BASE_PATH=/ pnpm --filter @workspace/bao-tang-so dev
 ```
 
-Windows (PowerShell):
+Windows PowerShell:
 
 ```powershell
 $env:PORT = '5173'
@@ -178,31 +145,9 @@ $env:BASE_PATH = '/'
 pnpm --filter @workspace/bao-tang-so dev
 ```
 
-Mở **http://localhost:5173** trên trình duyệt. Nếu muốn dùng cổng API khác `5000`, đặt thêm biến `API_URL` cho Vite để proxy trỏ đến API, ví dụ `http://127.0.0.1:5001`.
-
-Nếu cổng `5000` hoặc `5173` đã được chương trình khác sử dụng, hãy chọn cổng khác và cập nhật đồng bộ cấu hình API/frontend.
-
-## Kiểm tra và build
-
-Kiểm tra kiểu TypeScript:
-
-```bash
-pnpm typecheck
-```
-
-Build workspace:
-
-```bash
-pnpm build
-```
-
-Hiện workspace chưa khai báo script chạy test tự động.
-
-## Dừng ứng dụng và xử lý lỗi thường gặp
-
-- Dừng API và Vite bằng `Ctrl+C` trong terminal tương ứng.
-- Nếu API không kết nối được Firestore, kiểm tra `FIREBASE_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, quyền của service account và việc Firestore đã được tạo trong Firebase Console.
-- Nếu Vite báo thiếu `PORT` hoặc `BASE_PATH`, đặt cả hai biến theo lệnh dành cho hệ điều hành ở trên. Nếu cổng giao diện đã dùng, đổi `5173` thành cổng khác.
+Mở **http://localhost:5173** để xem web. Dừng mỗi ứng dụng bằng `Ctrl+C` trong
+terminal tương ứng. Nếu API không kết nối được Firestore, kiểm tra project ID,
+đường dẫn key và quyền của service account.
 
 ## Lưu ý vận hành
 
