@@ -19,7 +19,7 @@
 |---|---:|---|
 | Nguyễn Vũ Trường Sơn | 24100468 | Trưởng nhóm |
 | Trần Ngọc Minh | 24100190 | Phó nhóm |
-| Trịnh Xuân Hồng Phong | Chưa cung cấp | Thành viên |
+| Trịnh Xuân Hồng Phong | 24100279 | Thành viên |
 
 ## Tính năng
 
